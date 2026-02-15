@@ -1,8 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-import { createServer } from 'http';
 import session from 'express-session';
-import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -12,12 +11,24 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Config
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
-const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || ''; // Alibaba Cloud DashScope for direct Qwen access
-const AUTH_USERNAME = process.env.AUTH_USERNAME || 'benjamin';
-const AUTH_PASSWORD = process.env.AUTH_PASSWORD || 'antikythera2026';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'agent-workspace-secret-change-in-production';
+// Config — all secrets must come from environment variables
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || '';
+const AUTH_USERNAME = process.env.AUTH_USERNAME || '';
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+
+// Validate required config at startup
+const missingVars = [];
+if (!OPENROUTER_API_KEY) missingVars.push('OPENROUTER_API_KEY');
+if (!AUTH_USERNAME) missingVars.push('AUTH_USERNAME');
+if (!AUTH_PASSWORD) missingVars.push('AUTH_PASSWORD');
+if (!SESSION_SECRET) missingVars.push('SESSION_SECRET');
+if (missingVars.length > 0) {
+  console.error(`❌ Missing required environment variables: ${missingVars.join(', ')}`);
+  console.error('   Copy .env.example to .env and fill in the values.');
+  process.exit(1);
+}
 
 // Provider configurations
 const PROVIDERS = {
@@ -50,7 +61,18 @@ const PROVIDERS = {
 };
 
 // Middleware
-app.use(cors({ origin: true, credentials: true }));
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',');
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. server-to-server, curl)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(session({
   secret: SESSION_SECRET,
@@ -63,10 +85,20 @@ app.use(session({
   }
 }));
 
-// Load agents config
+// Load agents config — cached with file-watch reload
+let agentsCache = null;
+let agentsCachePath = join(__dirname, 'agents.config.json');
+
 function loadAgents() {
-  const configPath = join(__dirname, 'agents.config.json');
-  return JSON.parse(readFileSync(configPath, 'utf-8'));
+  if (!agentsCache) {
+    agentsCache = JSON.parse(readFileSync(agentsCachePath, 'utf-8'));
+  }
+  return agentsCache;
+}
+
+function saveAgents(agents) {
+  writeFileSync(agentsCachePath, JSON.stringify(agents, null, 2));
+  agentsCache = agents;
 }
 
 // Conversation storage (in-memory for now, could be SQLite)
@@ -281,7 +313,6 @@ app.get('/api/agents/:id', requireAuth, (req, res) => {
 
 // Update agent model on the fly
 app.patch('/api/agents/:id', requireAuth, (req, res) => {
-  const configPath = join(__dirname, 'agents.config.json');
   const agents = loadAgents();
   const agent = agents[req.params.id];
   
@@ -290,11 +321,19 @@ app.patch('/api/agents/:id', requireAuth, (req, res) => {
   }
   
   // Allow updating model, temperature, maxTokens
-  if (req.body.model) agent.model = req.body.model;
-  if (req.body.temperature !== undefined) agent.temperature = req.body.temperature;
-  if (req.body.maxTokens !== undefined) agent.maxTokens = req.body.maxTokens;
-  
-  writeFileSync(configPath, JSON.stringify(agents, null, 2));
+  if (req.body.model && typeof req.body.model === 'string') {
+    agent.model = req.body.model.slice(0, 200);
+  }
+  if (req.body.temperature !== undefined) {
+    const temp = Number(req.body.temperature);
+    if (!isNaN(temp) && temp >= 0 && temp <= 2) agent.temperature = temp;
+  }
+  if (req.body.maxTokens !== undefined) {
+    const tokens = Number(req.body.maxTokens);
+    if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) agent.maxTokens = tokens;
+  }
+
+  saveAgents(agents);
   res.json({ success: true, agent });
 });
 
@@ -302,9 +341,26 @@ app.patch('/api/agents/:id', requireAuth, (req, res) => {
 
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { agentId, messages } = req.body;
+
+  // Input validation
+  if (!agentId || typeof agentId !== 'string') {
+    return res.status(400).json({ error: 'agentId is required and must be a string' });
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'messages must be a non-empty array' });
+  }
+  for (const msg of messages) {
+    if (!msg.role || !['user', 'assistant', 'system'].includes(msg.role)) {
+      return res.status(400).json({ error: 'Each message must have a valid role' });
+    }
+    if (typeof msg.content !== 'string') {
+      return res.status(400).json({ error: 'Each message must have string content' });
+    }
+  }
+
   const agents = loadAgents();
   const agent = agents[agentId];
-  
+
   if (!agent) {
     return res.status(404).json({ error: 'Agent not found' });
   }
@@ -413,45 +469,67 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       return;
     }
 
+    // Handle client disconnect
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullResponse = '';
+    let lineBuffer = ''; // Buffer for handling chunk boundaries
 
     while (true) {
+      if (clientDisconnected) {
+        reader.cancel();
+        break;
+      }
+
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n').filter(line => line.trim() !== '');
+      lineBuffer += decoder.decode(value, { stream: true });
+      const lines = lineBuffer.split('\n');
+      // Keep the last incomplete line in the buffer
+      lineBuffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            // Store assistant response
-            conversations[agentId].push({ role: 'assistant', content: fullResponse });
-            
-            // Process any inter-agent commands in the response
-            processAgentCommands(agentId, fullResponse);
-            
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (!trimmed.startsWith('data: ')) continue;
+
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') {
+          // Store assistant response
+          conversations[agentId].push({ role: 'assistant', content: fullResponse });
+
+          // Process any inter-agent commands in the response
+          processAgentCommands(agentId, fullResponse);
+
+          if (!clientDisconnected) {
             res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-          } else {
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content;
-              if (content) {
-                fullResponse += content;
+          }
+        } else {
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              fullResponse += content;
+              if (!clientDisconnected) {
                 res.write(`data: ${JSON.stringify({ content })}\n\n`);
               }
-            } catch (e) {
-              // Skip unparseable chunks
             }
+          } catch (_) {
+            // Skip unparseable chunks
           }
         }
       }
     }
-  } catch (error) {
-    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
   }
 
   res.end();
@@ -475,7 +553,17 @@ app.delete('/api/conversations/:agentId', requireAuth, (req, res) => {
 app.post('/api/agents/:fromId/send', requireAuth, (req, res) => {
   const { toAgent, content, type } = req.body;
   const fromAgent = req.params.fromId;
-  
+
+  if (!toAgent || typeof toAgent !== 'string') {
+    return res.status(400).json({ error: 'toAgent is required' });
+  }
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ error: 'content is required and must be a string' });
+  }
+  if (content.length > 10000) {
+    return res.status(400).json({ error: 'content exceeds maximum length (10000)' });
+  }
+
   const agents = loadAgents();
   if (!agents[fromAgent]) {
     return res.status(404).json({ error: 'Source agent not found' });
@@ -483,33 +571,49 @@ app.post('/api/agents/:fromId/send', requireAuth, (req, res) => {
   if (toAgent !== 'all' && !agents[toAgent]) {
     return res.status(404).json({ error: 'Target agent not found' });
   }
-  
-  const msg = agentBus.send(fromAgent, toAgent, content, type);
+
+  const validTypes = ['message', 'handoff', 'request', 'response', 'broadcast'];
+  const msgType = validTypes.includes(type) ? type : 'message';
+
+  const msg = agentBus.send(fromAgent, toAgent, content, msgType);
   res.json({ success: true, message: msg });
 });
 
 // Create a handoff between agents
 app.post('/api/handoffs', requireAuth, (req, res) => {
   const { fromAgent, toAgent, task, context } = req.body;
-  
+
+  if (!fromAgent || !toAgent || !task) {
+    return res.status(400).json({ error: 'fromAgent, toAgent, and task are required' });
+  }
+  if (typeof task !== 'string' || task.length > 10000) {
+    return res.status(400).json({ error: 'task must be a string under 10000 characters' });
+  }
+
   const agents = loadAgents();
   if (!agents[fromAgent] || !agents[toAgent]) {
     return res.status(404).json({ error: 'Agent not found' });
   }
-  
-  const handoff = agentBus.createHandoff(fromAgent, toAgent, task, context);
+
+  const handoff = agentBus.createHandoff(fromAgent, toAgent, task, context || {});
   res.json({ success: true, handoff });
 });
 
 // Update handoff status
 app.patch('/api/handoffs/:id', requireAuth, (req, res) => {
   const { status, result } = req.body;
+
+  const validStatuses = ['pending', 'accepted', 'completed', 'rejected'];
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+  }
+
   const handoff = agentBus.updateHandoff(req.params.id, status, result);
-  
+
   if (!handoff) {
     return res.status(404).json({ error: 'Handoff not found' });
   }
-  
+
   res.json({ success: true, handoff });
 });
 
@@ -595,14 +699,35 @@ app.get('/api/models', requireAuth, async (req, res) => {
     });
     const data = await response.json();
     res.json(data.data || []);
-  } catch (error) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to fetch models' });
   }
 });
 
+// Global error handler
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Agent Workspace server running on port ${PORT}`);
   console.log(`📋 ${Object.keys(loadAgents()).length} agents loaded`);
   console.log(`🔐 Auth required: username=${AUTH_USERNAME}`);
 });
+
+// Graceful shutdown
+function shutdown(signal) {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  server.close(() => {
+    console.log('Server closed.');
+    process.exit(0);
+  });
+  // Force close after 5s
+  setTimeout(() => process.exit(1), 5000);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
