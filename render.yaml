@@ -24,9 +24,10 @@ services:
       - key: OPENCLAW_WEBHOOK_SECRET
         sync: false
 
-  # Frontend (static site)
-  - type: static
+  # Frontend
+  - type: web
     name: kriya
+    runtime: static
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
