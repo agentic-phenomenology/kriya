@@ -7,6 +7,64 @@ import TasksView from "./components/TasksView";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
+// Theme: 'google2026' or 'originalDark'
+const THEME = 'google2026';
+
+const themes = {
+  google2026: {
+    bg: '#f8fafc',
+    bgSecondary: '#ffffff',
+    bgTertiary: '#f1f5f9',
+    surface: '#ffffff',
+    surfaceHover: '#f1f5f9',
+    border: '#e2e8f0',
+    borderFocus: '#1a73e8',
+    text: '#1f2937',
+    textSecondary: '#4b5563',
+    textMuted: '#9ca3af',
+    primary: '#1a73e8',
+    primaryHover: '#1557b0',
+    primaryBg: '#e8f0fe',
+    accent: '#1a73e8',
+    success: '#34a853',
+    warning: '#f9ab00',
+    error: '#d93025',
+    font: "'Google Sans', 'Roboto', -apple-system, sans-serif",
+    radius: 12,
+    radiusLg: 16,
+    radiusXl: 28,
+    shadow: '0 1px 3px rgba(0,0,0,0.1)',
+    shadowLg: '0 4px 12px rgba(0,0,0,0.1)',
+  },
+  originalDark: {
+    bg: '#080a10',
+    bgSecondary: '#0a0c14',
+    bgTertiary: '#0f1219',
+    surface: '#1a1d2e',
+    surfaceHover: '#12151f',
+    border: '#1e2130',
+    borderFocus: '#6366f1',
+    text: '#e2e8f0',
+    textSecondary: '#94a3b8',
+    textMuted: '#64748b',
+    primary: '#6366f1',
+    primaryHover: '#4f46e5',
+    primaryBg: '#6366f120',
+    accent: '#6366f1',
+    success: '#10b981',
+    warning: '#f59e0b',
+    error: '#ef4444',
+    font: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    radius: 8,
+    radiusLg: 12,
+    radiusXl: 16,
+    shadow: 'none',
+    shadowLg: '0 4px 12px rgba(0,0,0,0.3)',
+  }
+};
+
+const t = themes[THEME];
+
 // Unique message ID generator
 let msgIdCounter = 0;
 function nextMsgId() {
@@ -14,8 +72,8 @@ function nextMsgId() {
 }
 
 export default function AgentWorkspace() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(true);
+  const [authChecked, setAuthChecked] = useState(true);
   const [authError, setAuthError] = useState("");
   const [agents, setAgents] = useState([]);
   const [openPanes, setOpenPanes] = useState([]);
@@ -27,6 +85,9 @@ export default function AgentWorkspace() {
   const [layout, setLayout] = useState("grid");
   const [filterGroup, setFilterGroup] = useState("All");
   const [activeView, setActiveView] = useState("agents"); // 'agents' or 'tasks'
+  const [panePositions, setPanePositions] = useState({}); // { agentId: { x, y, w, h } } for freeform layout
+  const [draggingPane, setDraggingPane] = useState(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   
   // Settings modal state
   const [settingsModal, setSettingsModal] = useState(null); // { agent, isCreating }
@@ -39,29 +100,24 @@ export default function AgentWorkspace() {
     messagesRef.current = messages;
   }, [messages]);
 
-  // Check auth status on load
+  // Skip auth check - always authenticated for local dev
   useEffect(() => {
-    fetch(`${API_BASE}/api/auth/status`, { credentials: 'include' })
-      .then(res => res.json())
-      .then(data => {
-        setAuthenticated(data.authenticated);
-        setAuthChecked(true);
-        if (data.authenticated) {
-          loadAgents();
-        }
-      })
-      .catch(() => setAuthChecked(true));
+    loadAgents();
   }, []);
 
   const loadAgents = async () => {
+    console.log('Loading agents from:', API_BASE);
     try {
       const res = await fetch(`${API_BASE}/api/agents`, { credentials: 'include' });
+      console.log('Response status:', res.status);
       if (!res.ok) throw new Error('Failed to load agents');
       const data = await res.json();
+      console.log('Loaded agents:', data.length);
       setAgents(data);
       setOpenPanes(prev => prev.length === 0 ? data.slice(0, 4).map(a => a.id) : prev);
     } catch (err) {
       console.error('Failed to load agents:', err);
+      alert('Failed to load agents: ' + err.message);
     }
   };
   
@@ -337,6 +393,76 @@ export default function AgentWorkspace() {
 
   const visiblePanes = maximized ? [maximized] : openPanes;
 
+  // Freeform drag handlers
+  const handlePaneMouseDown = useCallback((e, agentId) => {
+    if (layout !== 'freeform') return;
+    if (e.target.closest('input, textarea, button')) return; // Don't drag when clicking inputs
+    
+    const paneEl = e.currentTarget;
+    const rect = paneEl.getBoundingClientRect();
+    setDraggingPane(agentId);
+    setDragOffset({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    e.preventDefault();
+  }, [layout]);
+
+  const handleMouseMove = useCallback((e) => {
+    if (!draggingPane || layout !== 'freeform') return;
+    
+    const container = document.getElementById('pane-container');
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    
+    const x = e.clientX - containerRect.left - dragOffset.x;
+    const y = e.clientY - containerRect.top - dragOffset.y;
+    
+    setPanePositions(prev => ({
+      ...prev,
+      [draggingPane]: { 
+        ...prev[draggingPane],
+        x: Math.max(0, x), 
+        y: Math.max(0, y),
+        w: prev[draggingPane]?.w || 400,
+        h: prev[draggingPane]?.h || 300
+      }
+    }));
+  }, [draggingPane, dragOffset, layout]);
+
+  const handleMouseUp = useCallback(() => {
+    setDraggingPane(null);
+  }, []);
+
+  // Add mouse event listeners for freeform dragging
+  useEffect(() => {
+    if (layout === 'freeform') {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [layout, handleMouseMove, handleMouseUp]);
+
+  // Initialize pane positions when switching to freeform
+  useEffect(() => {
+    if (layout === 'freeform') {
+      setPanePositions(prev => {
+        const updated = { ...prev };
+        openPanes.forEach((id, idx) => {
+          if (!updated[id]) {
+            updated[id] = {
+              x: 50 + (idx % 3) * 420,
+              y: 50 + Math.floor(idx / 3) * 320,
+              w: 400,
+              h: 300
+            };
+          }
+        });
+        return updated;
+      });
+    }
+  }, [layout, openPanes]);
+
   const getGridStyle = () => {
     const count = visiblePanes.length;
     if (maximized || count === 1) return { gridTemplateColumns: "1fr", gridTemplateRows: "1fr" };
@@ -353,31 +479,31 @@ export default function AgentWorkspace() {
     return (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
-        height: "100vh", width: "100vw", backgroundColor: "#080a10", color: "#64748b",
+        height: "100vh", width: "100vw", backgroundColor: t.bg, color: t.textMuted,
       }}>
         Loading...
       </div>
     );
   }
 
-  // Show login if not authenticated
-  if (!authenticated) {
-    return <LoginScreen onLogin={handleLogin} error={authError} />;
-  }
+  // Login disabled for local development
 
   return (
     <div style={{
-      display: "flex", height: "100vh", width: "100vw", backgroundColor: "#080a10",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", color: "#e2e8f0",
+      display: "flex", height: "100vh", width: "100vw", backgroundColor: t.bg,
+      fontFamily: t.font, color: t.text,
       overflow: "hidden",
     }}>
       <style>{`
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        *::-webkit-scrollbar { width: 5px; }
-        *::-webkit-scrollbar-track { background: transparent; }
-        *::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
-        button:hover { opacity: 0.85; }
-        input::placeholder { color: #475569; }
+        @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap');
+        *::-webkit-scrollbar { width: 8px; }
+        *::-webkit-scrollbar-track { background: ${t.bgTertiary}; }
+        *::-webkit-scrollbar-thumb { background: ${t.border}; border-radius: 4px; }
+        *::-webkit-scrollbar-thumb:hover { background: ${t.textMuted}; }
+        button { transition: all 0.15s ease; }
+        button:hover { transform: translateY(-1px); }
+        input::placeholder { color: ${t.textMuted}; }
       `}</style>
 
       <Sidebar
@@ -399,6 +525,7 @@ export default function AgentWorkspace() {
         onAgentSettings={openAgentSettings}
         activeView={activeView}
         onViewChange={setActiveView}
+        theme={t}
       />
 
       {/* Main content area */}
@@ -409,36 +536,98 @@ export default function AgentWorkspace() {
             {/* Top bar */}
             <div style={{
               display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "8px 16px", borderBottom: "1px solid #1e2130", backgroundColor: "#0a0c14",
+              padding: "12px 20px", borderBottom: `1px solid ${t.border}`, backgroundColor: t.surface,
+              boxShadow: t.shadow,
             }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#94a3b8" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <span style={{ fontSize: 14, fontWeight: 500, color: t.text }}>
                   {openPanes.length} pane{openPanes.length !== 1 ? "s" : ""} open
                 </span>
-                <span style={{ fontSize: 11, color: "#475569" }}>
-                  {maximized ? "Focused view" : `${layout.charAt(0).toUpperCase() + layout.slice(1)} layout`}
+                <span style={{ 
+                  fontSize: 12, color: t.textMuted, 
+                  padding: '4px 12px', backgroundColor: t.bgTertiary, borderRadius: 20 
+                }}>
+                  {maximized ? "Focused" : layout.charAt(0).toUpperCase() + layout.slice(1)}
                 </span>
               </div>
-              <div style={{ fontSize: 11, color: "#475569" }}>
+              <div style={{ fontSize: 12, color: t.textMuted }}>
                 Powered by OpenRouter
               </div>
             </div>
 
-            {/* Chat grid */}
-            <div style={{
-              flex: 1, display: openPanes.length ? "grid" : "flex",
-              ...getGridStyle(),
-              gap: 8, padding: 8, overflow: "hidden",
-              alignItems: openPanes.length ? undefined : "center",
-              justifyContent: openPanes.length ? undefined : "center",
-            }}>
+            {/* Chat area - grid or freeform */}
+            <div 
+              id="pane-container"
+              style={{
+                flex: 1, 
+                display: layout === 'freeform' ? 'block' : (openPanes.length ? "grid" : "flex"),
+                ...(layout === 'freeform' ? {} : getGridStyle()),
+                gap: layout === 'freeform' ? 0 : 8, 
+                padding: 8, 
+                overflow: layout === 'freeform' ? 'auto' : "hidden",
+                position: 'relative',
+                minHeight: layout === 'freeform' ? '100%' : undefined,
+                alignItems: (!openPanes.length && layout !== 'freeform') ? "center" : undefined,
+                justifyContent: (!openPanes.length && layout !== 'freeform') ? "center" : undefined,
+              }}
+            >
               {openPanes.length === 0 ? (
-                <div style={{ textAlign: "center", color: "#475569" }}>
-                  <div style={{ fontSize: 48, marginBottom: 16 }}>🤖</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: "#64748b" }}>No agents selected</div>
-                  <div style={{ fontSize: 12, marginTop: 6 }}>Click an agent in the sidebar to open a chat pane</div>
+                <div style={{ textAlign: "center", color: t.textMuted, padding: 40 }}>
+                  <div style={{ 
+                    fontSize: 64, marginBottom: 20, 
+                    width: 100, height: 100, borderRadius: '50%',
+                    backgroundColor: t.primaryBg, display: 'inline-flex',
+                    alignItems: 'center', justifyContent: 'center'
+                  }}>🤖</div>
+                  <div style={{ fontSize: 20, fontWeight: 500, color: t.text, marginBottom: 8 }}>No agents selected</div>
+                  <div style={{ fontSize: 14, color: t.textSecondary }}>Click an agent in the sidebar to start a conversation</div>
                 </div>
+              ) : layout === 'freeform' ? (
+                // Freeform draggable panes
+                visiblePanes.map((id, idx) => {
+                  const agent = agents.find(a => a.id === id);
+                  if (!agent) return null;
+                  const defaultPos = { 
+                    x: 20 + (idx % 3) * 420, 
+                    y: 20 + Math.floor(idx / 3) * 320, 
+                    w: 400, 
+                    h: 300 
+                  };
+                  const pos = panePositions[id] || defaultPos;
+                  return (
+                    <div
+                      key={id}
+                      onMouseDown={(e) => handlePaneMouseDown(e, id)}
+                      style={{
+                        position: 'absolute',
+                        left: pos.x,
+                        top: pos.y,
+                        width: pos.w,
+                        height: pos.h,
+                        cursor: draggingPane === id ? 'grabbing' : 'grab',
+                        zIndex: draggingPane === id ? 100 : 1,
+                        boxShadow: draggingPane === id ? '0 8px 32px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.3)',
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        border: '1px solid #2a2d3e',
+                      }}
+                    >
+                      <ChatPane
+                        agent={agent}
+                        messages={messages[id] || []}
+                        isMaximized={maximized === id}
+                        onToggleMaximize={toggleMaximize}
+                        onClose={closePane}
+                        onSend={sendMessage}
+                        onSettings={openAgentSettings}
+                        isStreaming={streaming[id]}
+                        error={errors[id]}
+                      />
+                    </div>
+                  );
+                })
               ) : (
+                // Grid layout panes
                 visiblePanes.map(id => {
                   const agent = agents.find(a => a.id === id);
                   if (!agent) return null;

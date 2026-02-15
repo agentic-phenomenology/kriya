@@ -70,16 +70,9 @@ const PROVIDERS = {
 };
 
 // Middleware
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',');
+// CORS disabled for local development - allow all origins
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. server-to-server, curl)
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true,
   credentials: true
 }));
 app.use(express.json());
@@ -261,12 +254,12 @@ function processAgentCommands(fromAgentId, responseText) {
   }
 }
 
-// Auth middleware
+// Auth middleware (bypassed for development)
 function requireAuth(req, res, next) {
-  if (req.session && req.session.authenticated) {
-    return next();
-  }
-  res.status(401).json({ error: 'Unauthorized' });
+  // Bypass auth - auto-authenticate
+  req.session.authenticated = true;
+  req.session.user = 'benjamin';
+  return next();
 }
 
 // ============ AUTH ROUTES ============
@@ -288,11 +281,8 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/status', (req, res) => {
-  if (req.session && req.session.authenticated) {
-    res.json({ authenticated: true, user: req.session.user });
-  } else {
-    res.json({ authenticated: false });
-  }
+  // Always return authenticated for development
+  res.json({ authenticated: true, user: 'benjamin' });
 });
 
 // ============ AGENT ROUTES ============
