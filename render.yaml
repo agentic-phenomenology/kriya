@@ -3,11 +3,9 @@ services:
   - type: web
     name: kriya-api
     runtime: node
-    region: oregon
-    plan: free
-    rootDir: server
     buildCommand: npm install
     startCommand: node index.js
+    rootDir: server
     envVars:
       - key: NODE_ENV
         value: production
@@ -26,11 +24,9 @@ services:
       - key: OPENCLAW_WEBHOOK_SECRET
         sync: false
 
-  # Frontend
-  - type: web
+  # Frontend (static site)
+  - type: static
     name: kriya
-    runtime: static
-    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
