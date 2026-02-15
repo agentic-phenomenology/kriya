@@ -1,7 +1,7 @@
 services:
   # Backend API
   - type: web
-    name: kriya-api
+    name: kriya-agents-api
     runtime: node
     buildCommand: npm install
     startCommand: node index.js
@@ -20,19 +20,19 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://kriya.onrender.com
+        value: https://kriya-agents.onrender.com
       - key: OPENCLAW_WEBHOOK_SECRET
         sync: false
 
   # Frontend
   - type: web
-    name: kriya
+    name: kriya-agents
     runtime: static
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        value: https://kriya-api.onrender.com
+        value: https://kriya-agents-api.onrender.com
     headers:
       - path: /*
         name: Cache-Control
