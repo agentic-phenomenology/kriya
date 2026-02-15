@@ -96,6 +96,9 @@ function nextMsgId() {
   return `msg-${Date.now()}-${++msgIdCounter}`;
 }
 
+// Detect mobile
+const isMobile = () => window.innerWidth <= 768;
+
 export default function AgentWorkspace() {
   const [authenticated, setAuthenticated] = useState(true);
   const [authChecked, setAuthChecked] = useState(true);
@@ -106,8 +109,10 @@ export default function AgentWorkspace() {
   const [messages, setMessages] = useState({});
   const [streaming, setStreaming] = useState({});
   const [errors, setErrors] = useState({});
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile());
   const [layout, setLayout] = useState("grid");
+  const [isMobileView, setIsMobileView] = useState(isMobile());
+  const [mobileActivePane, setMobileActivePane] = useState(null); // For mobile single-pane view
   const [filterGroup, setFilterGroup] = useState("All");
   const [activeView, setActiveView] = useState("agents"); // 'agents' or 'tasks'
   const [panePositions, setPanePositions] = useState({}); // { agentId: { x, y, w, h } } for freeform layout
@@ -124,6 +129,19 @@ export default function AgentWorkspace() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Detect mobile on resize
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = isMobile();
+      setIsMobileView(mobile);
+      if (mobile && !sidebarCollapsed) {
+        setSidebarCollapsed(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [sidebarCollapsed]);
 
   // Skip auth check - always authenticated for local dev
   useEffect(() => {
@@ -299,14 +317,23 @@ export default function AgentWorkspace() {
   };
 
   const togglePane = useCallback((id) => {
-    setOpenPanes(prev => {
-      if (prev.includes(id)) {
-        setMaximized(m => m === id ? null : m);
-        return prev.filter(p => p !== id);
+    if (isMobileView) {
+      // On mobile, toggle opens agent full-screen
+      setMobileActivePane(prev => prev === id ? null : id);
+      if (!openPanes.includes(id)) {
+        setOpenPanes(prev => [...prev, id]);
       }
-      return [...prev, id];
-    });
-  }, []);
+      setSidebarCollapsed(true); // Auto-hide sidebar on mobile
+    } else {
+      setOpenPanes(prev => {
+        if (prev.includes(id)) {
+          setMaximized(m => m === id ? null : m);
+          return prev.filter(p => p !== id);
+        }
+        return [...prev, id];
+      });
+    }
+  }, [isMobileView, openPanes]);
 
   const closePane = useCallback((id) => {
     setOpenPanes(prev => prev.filter(p => p !== id));
@@ -551,6 +578,7 @@ export default function AgentWorkspace() {
         activeView={activeView}
         onViewChange={setActiveView}
         theme={t}
+        isMobile={isMobileView}
       />
 
       {/* Main content area */}
@@ -561,34 +589,59 @@ export default function AgentWorkspace() {
             {/* Top bar */}
             <div style={{
               display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "12px 20px", borderBottom: `1px solid ${t.border}`, backgroundColor: t.surface,
+              padding: isMobileView ? "10px 12px" : "12px 20px", 
+              borderBottom: `1px solid ${t.border}`, backgroundColor: t.surface,
               boxShadow: t.shadow,
             }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                <span style={{ fontSize: 14, fontWeight: 500, color: t.text }}>
-                  {openPanes.length} pane{openPanes.length !== 1 ? "s" : ""} open
+              <div style={{ display: "flex", alignItems: "center", gap: isMobileView ? 8 : 16 }}>
+                {/* Mobile: hamburger menu or back button */}
+                {isMobileView && (
+                  <button
+                    onClick={() => {
+                      if (mobileActivePane) {
+                        setMobileActivePane(null);
+                      } else {
+                        setSidebarCollapsed(!sidebarCollapsed);
+                      }
+                    }}
+                    style={{
+                      background: 'none', border: 'none', color: t.text,
+                      fontSize: 20, cursor: 'pointer', padding: 4,
+                    }}
+                  >
+                    {mobileActivePane ? '←' : '☰'}
+                  </button>
+                )}
+                <span style={{ fontSize: isMobileView ? 13 : 14, fontWeight: 500, color: t.text }}>
+                  {isMobileView && mobileActivePane 
+                    ? agents.find(a => a.id === mobileActivePane)?.name || 'Chat'
+                    : `${openPanes.length} pane${openPanes.length !== 1 ? "s" : ""} open`}
                 </span>
-                <span style={{ 
-                  fontSize: 12, color: t.textMuted, 
-                  padding: '4px 12px', backgroundColor: t.bgTertiary, borderRadius: 20 
-                }}>
-                  {maximized ? "Focused" : layout.charAt(0).toUpperCase() + layout.slice(1)}
-                </span>
+                {!isMobileView && (
+                  <span style={{ 
+                    fontSize: 12, color: t.textMuted, 
+                    padding: '4px 12px', backgroundColor: t.bgTertiary, borderRadius: 20 
+                  }}>
+                    {maximized ? "Focused" : layout.charAt(0).toUpperCase() + layout.slice(1)}
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: 12, color: t.textMuted }}>
-                Powered by OpenRouter
+                {!isMobileView && "Powered by OpenRouter"}
               </div>
             </div>
 
-            {/* Chat area - grid or freeform */}
+            {/* Chat area - grid, freeform, or mobile single-pane */}
             <div 
               id="pane-container"
               style={{
                 flex: 1, 
-                display: layout === 'freeform' ? 'block' : (openPanes.length ? "grid" : "flex"),
-                ...(layout === 'freeform' ? {} : getGridStyle()),
-                gap: layout === 'freeform' ? 0 : 8, 
-                padding: 8, 
+                display: isMobileView 
+                  ? 'flex' 
+                  : (layout === 'freeform' ? 'block' : (openPanes.length ? "grid" : "flex")),
+                ...(isMobileView ? {} : (layout === 'freeform' ? {} : getGridStyle())),
+                gap: isMobileView ? 0 : (layout === 'freeform' ? 0 : 8), 
+                padding: isMobileView ? 0 : 8, 
                 overflow: layout === 'freeform' ? 'auto' : "hidden",
                 position: 'relative',
                 minHeight: layout === 'freeform' ? '100%' : undefined,
@@ -596,7 +649,56 @@ export default function AgentWorkspace() {
                 justifyContent: (!openPanes.length && layout !== 'freeform') ? "center" : undefined,
               }}
             >
-              {openPanes.length === 0 ? (
+              {/* Mobile: show single active pane or agent list */}
+              {isMobileView ? (
+                mobileActivePane ? (
+                  // Show active chat pane full screen
+                  (() => {
+                    const agent = agents.find(a => a.id === mobileActivePane);
+                    if (!agent) return null;
+                    return (
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                        <ChatPane
+                          agent={agent}
+                          messages={messages[mobileActivePane] || []}
+                          isMaximized={true}
+                          onToggleMaximize={() => setMobileActivePane(null)}
+                          onClose={() => { setMobileActivePane(null); closePane(mobileActivePane); }}
+                          onSend={sendMessage}
+                          onSettings={openAgentSettings}
+                          isStreaming={streaming[mobileActivePane]}
+                          error={errors[mobileActivePane]}
+                        />
+                      </div>
+                    );
+                  })()
+                ) : (
+                  // Show agent selection list on mobile when no pane active
+                  <div style={{ flex: 1, padding: 16, overflowY: 'auto' }}>
+                    <div style={{ fontSize: 18, fontWeight: 500, color: t.text, marginBottom: 16 }}>
+                      Select an Agent
+                    </div>
+                    {agents.map(agent => (
+                      <div
+                        key={agent.id}
+                        onClick={() => togglePane(agent.id)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          padding: 16, marginBottom: 8, borderRadius: t.radius,
+                          backgroundColor: t.surface, border: `1px solid ${t.border}`,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <span style={{ fontSize: 28 }}>{agent.icon}</span>
+                        <div>
+                          <div style={{ fontWeight: 500, color: t.text }}>{agent.name}</div>
+                          <div style={{ fontSize: 12, color: t.textMuted }}>{agent.group}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : openPanes.length === 0 ? (
                 <div style={{ textAlign: "center", color: t.textMuted, padding: 40 }}>
                   <div style={{ 
                     fontSize: 64, marginBottom: 20, 

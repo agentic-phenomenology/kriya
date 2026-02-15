@@ -22,6 +22,7 @@ export default function Sidebar({
   activeView,
   onViewChange,
   theme: t,
+  isMobile,
 }) {
   const [draggedId, setDraggedId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
@@ -39,17 +40,44 @@ export default function Sidebar({
     };
   }
 
+  // On mobile, sidebar is an overlay
+  const mobileStyles = isMobile ? {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    zIndex: 1000,
+    width: sidebarCollapsed ? 0 : '85vw',
+    maxWidth: 320,
+    transform: sidebarCollapsed ? 'translateX(-100%)' : 'translateX(0)',
+    transition: 'transform 0.3s ease, width 0.3s ease',
+  } : {};
+
   return (
-    <div style={{
-      width: sidebarCollapsed ? 72 : 280, 
-      minWidth: sidebarCollapsed ? 72 : 280,
-      backgroundColor: t.surface, 
-      borderRight: `1px solid ${t.border}`,
-      display: "flex", flexDirection: "column", 
-      transition: "width 0.25s ease, min-width 0.25s ease",
-      overflow: "hidden",
-      boxShadow: t.shadow,
-    }}>
+    <>
+      {/* Mobile overlay backdrop */}
+      {isMobile && !sidebarCollapsed && (
+        <div
+          onClick={() => setSidebarCollapsed(true)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            zIndex: 999,
+          }}
+        />
+      )}
+      <div style={{
+        width: sidebarCollapsed ? (isMobile ? 0 : 72) : 280, 
+        minWidth: sidebarCollapsed ? (isMobile ? 0 : 72) : 280,
+        backgroundColor: t.surface, 
+        borderRight: `1px solid ${t.border}`,
+        display: "flex", flexDirection: "column", 
+        transition: "width 0.25s ease, min-width 0.25s ease, transform 0.3s ease",
+        overflow: "hidden",
+        boxShadow: isMobile ? t.shadowLg : t.shadow,
+        ...mobileStyles,
+      }}>
       {/* Sidebar header */}
       <div style={{
         padding: sidebarCollapsed ? "16px 12px" : "20px 20px",
@@ -362,5 +390,6 @@ export default function Sidebar({
         </div>
       )}
     </div>
+    </>
   );
 }
