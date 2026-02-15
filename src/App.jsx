@@ -1,67 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-const AGENTS = [
-  { id: "research", name: "Research Agent", icon: "🔍", color: "#6366f1", status: "active", model: "Claude Sonnet 4.5", group: "Analysis" },
-  { id: "writer", name: "Writer Agent", icon: "✍️", color: "#8b5cf6", status: "active", model: "Claude Opus 4", group: "Analysis" },
-  { id: "code", name: "Code Agent", icon: "⚡", color: "#06b6d4", status: "computing", model: "Claude Sonnet 4.5", group: "Engineering" },
-  { id: "security", name: "Security Agent", icon: "🛡️", color: "#f59e0b", status: "idle", model: "GPT-4o", group: "Engineering" },
-  { id: "data", name: "Data Agent", icon: "📊", color: "#10b981", status: "active", model: "Claude Haiku 4.5", group: "Analysis" },
-  { id: "deploy", name: "Deploy Agent", icon: "🚀", color: "#ef4444", status: "blocked", model: "Local Fine-tune", group: "Engineering" },
-  { id: "design", name: "Design Agent", icon: "🎨", color: "#ec4899", status: "idle", model: "Claude Sonnet 4.5", group: "Creative" },
-  { id: "qa", name: "QA Agent", icon: "✅", color: "#14b8a6", status: "waiting", model: "Claude Haiku 4.5", group: "Engineering" },
-];
-
-const SAMPLE_MESSAGES = {
-  research: [
-    { role: "user", text: "Find recent papers on multi-agent coordination in distributed systems." },
-    { role: "agent", text: "I found 12 relevant papers from the last 6 months. The most cited is Chen et al. (2025) on consensus protocols for LLM agent swarms. Key findings: hierarchical orchestration outperforms flat topologies by 34% on complex tasks. Shall I synthesize the top 5?" },
-    { role: "user", text: "Yes, focus on practical architectures — skip the pure theory." },
-    { role: "agent", text: "Synthesizing 5 papers with practical architectures. Three use DAG-based execution graphs, two use blackboard architectures. Common pattern: all separate the orchestration layer from the execution layer. Drafting summary now..." },
-  ],
-  writer: [
-    { role: "agent", text: "I've received the research synthesis from Research Agent. Starting the executive summary draft for the Q3 report." },
-    { role: "agent", text: "Draft complete — 1,200 words. Confidence: 0.82. Two sections flagged for human review: the market sizing estimates rely on a single source, and the competitive analysis may be outdated. Sending to Verifier." },
-    { role: "user", text: "Use a more assertive tone in the recommendations section." },
-    { role: "agent", text: "Revised. Recommendations now lead with action verbs and quantified impact. \"We recommend\" → \"Deploy immediately to capture...\" Confidence improved to 0.87." },
-  ],
-  code: [
-    { role: "agent", text: "Parsing the API specification from the shared context. I see 14 endpoints, 6 with authentication requirements." },
-    { role: "agent", text: "Generated scaffolding for all 14 endpoints. Running type-check... 2 issues found in the payment module — the webhook signature type doesn't match the provider's docs." },
-    { role: "user", text: "Fix the webhook types and add retry logic for the payment endpoints." },
-    { role: "agent", text: "```typescript\n// Fixing webhook signature...\ntype WebhookPayload = {\n  event: PaymentEvent;\n  signature: string; // was: number\n  timestamp: ISO8601;\n}\n```\nRetry logic added: 3x exponential backoff, 1s → 4s → 16s. Running tests..." },
-    { role: "agent", text: "All 47 tests passing. Coverage: 91%. Payment retry logic verified with mock failure injection. Ready for Security Agent review." },
-  ],
-  security: [
-    { role: "agent", text: "Received code from Code Agent for security review. Scanning for vulnerabilities..." },
-    { role: "agent", text: "⚠️ Found 2 issues:\n1. SQL injection risk in search endpoint (CRITICAL)\n2. Missing rate limiting on auth endpoints (HIGH)\n\nBlocking deployment until resolved. Notifying Code Agent." },
-    { role: "user", text: "Is the SQL injection in the ORM layer or raw queries?" },
-    { role: "agent", text: "Raw query in /api/search — string concatenation instead of parameterized query. The ORM usage elsewhere is clean. Sending specific fix recommendation to Code Agent now." },
-  ],
-  data: [
-    { role: "user", text: "Pull the conversion funnel data for the last 30 days." },
-    { role: "agent", text: "Query complete. 142K sessions analyzed.\n\nVisit → Signup: 12.3% (↑1.2% vs prior)\nSignup → Activate: 48.7% (↓3.1%)\nActivate → Purchase: 22.1% (stable)\n\nThe activation drop correlates with the new onboarding flow deployed on Feb 3rd. Want me to segment by acquisition channel?" },
-    { role: "user", text: "Yes, break it down by organic vs paid vs referral." },
-    { role: "agent", text: "Segmented. The activation drop is concentrated in paid channels (↓8.2%). Organic and referral are stable. Hypothesis: the new onboarding is too long for users with lower intent. Generating visualization..." },
-  ],
-  deploy: [
-    { role: "agent", text: "🔴 BLOCKED — Security Agent has flagged 2 vulnerabilities in the latest build. Cannot proceed with deployment until issues are resolved." },
-    { role: "agent", text: "Waiting on Code Agent to push fixes. Current queue: 1 hotfix (payment webhook types), 1 security patch (SQL injection). Estimated unblock: ~15 minutes after Code Agent completes." },
-    { role: "user", text: "Can we deploy everything except the search endpoint?" },
-    { role: "agent", text: "Partial deployment is possible. I can exclude /api/search and deploy the remaining 13 endpoints. This would unblock the payment team. Shall I proceed? (Requires your approval for partial deploy)" },
-  ],
-  design: [
-    { role: "user", text: "Create a component library for the new dashboard." },
-    { role: "agent", text: "Analyzing existing design tokens and component patterns. I see 3 button variants, 2 card styles, and inconsistent spacing values. Shall I normalize to an 8px grid and propose a unified token set?" },
-    { role: "user", text: "Yes, 8px grid. Use the blue from our brand guide as the primary." },
-    { role: "agent", text: "Token set drafted: 5 blues (50-900), neutral grays, semantic colors for success/warning/error. 12 components specced: Button, Card, Input, Select, Modal, Toast, Badge, Avatar, Table, Tabs, Sidebar, Header. Generating Figma-ready specs..." },
-  ],
-  qa: [
-    { role: "agent", text: "Monitoring Code Agent's test suite. Current status: 47/47 passing. Initiating integration test suite..." },
-    { role: "agent", text: "Integration tests: 31/34 passing. 3 failures in payment flow — all related to the webhook type mismatch that Code Agent is fixing. Will re-run automatically when the fix lands." },
-    { role: "user", text: "Add a load test for the search endpoint before we deploy." },
-    { role: "agent", text: "Load test configured: 1000 concurrent users, 60-second ramp, targeting /api/search. However, Security Agent has flagged this endpoint — recommend running load test AFTER the SQL injection fix to avoid testing vulnerable code under load. Queued for post-fix execution." },
-  ],
-};
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 const STATUS_CONFIG = {
   active: { label: "Active", color: "#10b981", pulse: true },
@@ -72,7 +11,7 @@ const STATUS_CONFIG = {
 };
 
 const StatusDot = ({ status }) => {
-  const cfg = STATUS_CONFIG[status];
+  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.idle;
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: cfg.color, fontWeight: 600 }}>
       <span style={{
@@ -85,7 +24,90 @@ const StatusDot = ({ status }) => {
   );
 };
 
-const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onSend }) => {
+// ============ LOGIN SCREEN ============
+
+const LoginScreen = ({ onLogin, error }) => {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    await onLogin(username, password);
+    setLoading(false);
+  };
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      height: "100vh", width: "100vw", backgroundColor: "#080a10",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    }}>
+      <div style={{
+        backgroundColor: "#0f1117", borderRadius: 12, padding: 32,
+        border: "1px solid #1e2130", width: 320, boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+      }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>🤖</div>
+          <h1 style={{ color: "#f1f5f9", fontSize: 20, fontWeight: 700, margin: 0 }}>Agent Hub</h1>
+          <p style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>Multi-agent workspace</p>
+        </div>
+        
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", color: "#94a3b8", fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Username</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8,
+                border: "1px solid #2a2d3e", backgroundColor: "#141722",
+                color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box",
+              }}
+              placeholder="Enter username"
+              autoFocus
+            />
+          </div>
+          
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", color: "#94a3b8", fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8,
+                border: "1px solid #2a2d3e", backgroundColor: "#141722",
+                color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box",
+              }}
+              placeholder="Enter password"
+            />
+          </div>
+
+          {error && (
+            <div style={{ color: "#ef4444", fontSize: 12, marginBottom: 16, textAlign: "center" }}>
+              {error}
+            </div>
+          )}
+          
+          <button type="submit" disabled={loading} style={{
+            width: "100%", padding: "12px", borderRadius: 8, border: "none",
+            backgroundColor: "#6366f1", color: "white", fontSize: 14, fontWeight: 600,
+            cursor: loading ? "wait" : "pointer", opacity: loading ? 0.7 : 1,
+          }}>
+            {loading ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============ CHAT PANE ============
+
+const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onSend, isStreaming }) => {
   const [input, setInput] = useState("");
   const scrollRef = useRef(null);
 
@@ -94,10 +116,12 @@ const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onS
   }, [messages]);
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    if (!input.trim() || isStreaming) return;
     onSend(agent.id, input.trim());
     setInput("");
   };
+
+  const currentStatus = isStreaming ? "computing" : agent.status;
 
   return (
     <div style={{
@@ -117,8 +141,8 @@ const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onS
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>{agent.name}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
-              <StatusDot status={agent.status} />
-              <span style={{ fontSize: 10, color: "#64748b" }}>{agent.model}</span>
+              <StatusDot status={currentStatus} />
+              <span style={{ fontSize: 10, color: "#64748b" }}>{agent.model?.split('/').pop()}</span>
             </div>
           </div>
         </div>
@@ -141,23 +165,36 @@ const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onS
         flex: 1, overflowY: "auto", padding: 12, display: "flex",
         flexDirection: "column", gap: 10, minHeight: 0,
       }}>
-        {messages.map((msg, i) => (
-          <div key={i} style={{
-            display: "flex", flexDirection: "column",
-            alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-          }}>
-            <div style={{
-              maxWidth: "88%", padding: "8px 12px", borderRadius: 10,
-              fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap",
-              backgroundColor: msg.role === "user" ? "#1e3a5f" : "#1a1d2e",
-              color: msg.role === "user" ? "#93c5fd" : "#cbd5e1",
-              borderBottomRightRadius: msg.role === "user" ? 2 : 10,
-              borderBottomLeftRadius: msg.role === "user" ? 10 : 2,
-            }}>
-              {msg.text}
-            </div>
+        {messages.length === 0 ? (
+          <div style={{ textAlign: "center", color: "#475569", padding: 20 }}>
+            <div style={{ fontSize: 24, marginBottom: 8 }}>{agent.icon}</div>
+            <div style={{ fontSize: 12 }}>Start a conversation with {agent.name}</div>
           </div>
-        ))}
+        ) : (
+          messages.map((msg, i) => (
+            <div key={i} style={{
+              display: "flex", flexDirection: "column",
+              alignItems: msg.role === "user" ? "flex-end" : "flex-start",
+            }}>
+              <div style={{
+                maxWidth: "88%", padding: "8px 12px", borderRadius: 10,
+                fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap",
+                backgroundColor: msg.role === "user" ? "#1e3a5f" : "#1a1d2e",
+                color: msg.role === "user" ? "#93c5fd" : "#cbd5e1",
+                borderBottomRightRadius: msg.role === "user" ? 2 : 10,
+                borderBottomLeftRadius: msg.role === "user" ? 10 : 2,
+              }}>
+                {msg.content || msg.text}
+              </div>
+            </div>
+          ))
+        )}
+        {isStreaming && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#64748b", fontSize: 11 }}>
+            <span style={{ animation: "pulse 1s ease-in-out infinite" }}>●</span>
+            {agent.name} is thinking...
+          </div>
+        )}
       </div>
 
       {/* Input */}
@@ -168,38 +205,106 @@ const ChatPane = ({ agent, messages, isMaximized, onToggleMaximize, onClose, onS
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && handleSend()}
+          onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleSend()}
           placeholder={`Message ${agent.name}...`}
+          disabled={isStreaming}
           style={{
             flex: 1, backgroundColor: "#141722", border: "1px solid #2a2d3e",
             borderRadius: 6, padding: "8px 10px", color: "#e2e8f0", fontSize: 12,
-            outline: "none",
+            outline: "none", opacity: isStreaming ? 0.6 : 1,
           }}
         />
-        <button onClick={handleSend} style={{
+        <button onClick={handleSend} disabled={isStreaming} style={{
           backgroundColor: agent.color, color: "white", border: "none",
           borderRadius: 6, padding: "8px 12px", fontSize: 12, fontWeight: 600,
-          cursor: "pointer", whiteSpace: "nowrap",
+          cursor: isStreaming ? "wait" : "pointer", whiteSpace: "nowrap",
+          opacity: isStreaming ? 0.6 : 1,
         }}>Send</button>
       </div>
     </div>
   );
 };
 
+// ============ MAIN APP ============
+
 export default function AgentWorkspace() {
-  const [openPanes, setOpenPanes] = useState(["research", "code", "security", "data"]);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [agents, setAgents] = useState([]);
+  const [openPanes, setOpenPanes] = useState([]);
   const [maximized, setMaximized] = useState(null);
-  const [messages, setMessages] = useState(SAMPLE_MESSAGES);
+  const [messages, setMessages] = useState({});
+  const [streaming, setStreaming] = useState({});
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [layout, setLayout] = useState("grid");
-  const [dragOver, setDragOver] = useState(null);
   const [filterGroup, setFilterGroup] = useState("All");
 
-  const groups = ["All", ...new Set(AGENTS.map(a => a.group))];
+  // Check auth status on load
+  useEffect(() => {
+    fetch(`${API_BASE}/api/auth/status`, { credentials: 'include' })
+      .then(res => res.json())
+      .then(data => {
+        setAuthenticated(data.authenticated);
+        setAuthChecked(true);
+        if (data.authenticated) {
+          loadAgents();
+        }
+      })
+      .catch(() => setAuthChecked(true));
+  }, []);
+
+  const loadAgents = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/agents`, { credentials: 'include' });
+      const data = await res.json();
+      setAgents(data);
+      // Open first 4 agents by default
+      if (data.length > 0 && openPanes.length === 0) {
+        setOpenPanes(data.slice(0, 4).map(a => a.id));
+      }
+    } catch (error) {
+      console.error('Failed to load agents:', error);
+    }
+  };
+
+  const handleLogin = async (username, password) => {
+    setAuthError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAuthenticated(true);
+        loadAgents();
+      } else {
+        setAuthError(data.error || 'Login failed');
+      }
+    } catch (error) {
+      setAuthError('Connection failed');
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch(`${API_BASE}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    setAuthenticated(false);
+    setAgents([]);
+    setMessages({});
+    setOpenPanes([]);
+  };
+
+  const groups = ["All", ...new Set(agents.map(a => a.group))];
 
   const filteredAgents = filterGroup === "All"
-    ? AGENTS
-    : AGENTS.filter(a => a.group === filterGroup);
+    ? agents
+    : agents.filter(a => a.group === filterGroup);
 
   const togglePane = (id) => {
     if (openPanes.includes(id)) {
@@ -219,19 +324,79 @@ export default function AgentWorkspace() {
     setMaximized(maximized === id ? null : id);
   };
 
-  const sendMessage = (agentId, text) => {
+  const sendMessage = async (agentId, text) => {
+    // Add user message
+    const userMsg = { role: "user", content: text };
     setMessages(prev => ({
       ...prev,
-      [agentId]: [...(prev[agentId] || []), { role: "user", text }],
+      [agentId]: [...(prev[agentId] || []), userMsg]
     }));
-    setTimeout(() => {
-      setMessages(prev => ({
-        ...prev,
-        [agentId]: [...(prev[agentId] || []),
-          { role: "agent", text: `Processing: "${text.substring(0, 40)}${text.length > 40 ? "..." : ""}" — Working on it...` }
-        ],
+
+    // Start streaming
+    setStreaming(prev => ({ ...prev, [agentId]: true }));
+
+    // Add placeholder for assistant response
+    setMessages(prev => ({
+      ...prev,
+      [agentId]: [...(prev[agentId] || []), { role: "assistant", content: "" }]
+    }));
+
+    try {
+      const allMessages = [...(messages[agentId] || []), userMsg].map(m => ({
+        role: m.role,
+        content: m.content || m.text
       }));
-    }, 800);
+
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ agentId, messages: allMessages })
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter(line => line.startsWith('data: '));
+
+        for (const line of lines) {
+          const data = line.slice(6);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.content) {
+              assistantContent += parsed.content;
+              // Update the last message (assistant)
+              setMessages(prev => {
+                const agentMessages = [...(prev[agentId] || [])];
+                agentMessages[agentMessages.length - 1] = {
+                  role: "assistant",
+                  content: assistantContent
+                };
+                return { ...prev, [agentId]: agentMessages };
+              });
+            }
+            if (parsed.done) {
+              setStreaming(prev => ({ ...prev, [agentId]: false }));
+            }
+            if (parsed.error) {
+              console.error('Stream error:', parsed.error);
+              setStreaming(prev => ({ ...prev, [agentId]: false }));
+            }
+          } catch (e) {
+            // Skip unparseable
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      setStreaming(prev => ({ ...prev, [agentId]: false }));
+    }
   };
 
   const visiblePanes = maximized ? [maximized] : openPanes;
@@ -246,6 +411,23 @@ export default function AgentWorkspace() {
     if (count <= 6) return { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: count <= 3 ? "1fr" : "1fr 1fr" };
     return { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: `repeat(${Math.ceil(count / 4)}, 1fr)` };
   };
+
+  // Show loading while checking auth
+  if (!authChecked) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100vh", width: "100vw", backgroundColor: "#080a10", color: "#64748b",
+      }}>
+        Loading...
+      </div>
+    );
+  }
+
+  // Show login if not authenticated
+  if (!authenticated) {
+    return <LoginScreen onLogin={handleLogin} error={authError} />;
+  }
 
   return (
     <div style={{
@@ -278,7 +460,7 @@ export default function AgentWorkspace() {
           {!sidebarCollapsed && (
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.3px" }}>Agent Hub</div>
-              <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{AGENTS.filter(a => a.status === "active" || a.status === "computing").length} active / {AGENTS.length} total</div>
+              <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{agents.length} agents</div>
             </div>
           )}
           <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} style={{
@@ -311,6 +493,7 @@ export default function AgentWorkspace() {
             <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
               {filteredAgents.map(agent => {
                 const isOpen = openPanes.includes(agent.id);
+                const isAgentStreaming = streaming[agent.id];
                 return (
                   <button key={agent.id} onClick={() => togglePane(agent.id)} style={{
                     display: "flex", alignItems: "center", gap: 10, width: "100%",
@@ -323,7 +506,7 @@ export default function AgentWorkspace() {
                     <span style={{ fontSize: 18, width: 28, textAlign: "center" }}>{agent.icon}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12, fontWeight: 600, color: isOpen ? "#f1f5f9" : "#94a3b8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{agent.name}</div>
-                      <StatusDot status={agent.status} />
+                      <StatusDot status={isAgentStreaming ? "computing" : agent.status} />
                     </div>
                     {isOpen && <span style={{ fontSize: 8, color: agent.color }}>●</span>}
                   </button>
@@ -349,7 +532,7 @@ export default function AgentWorkspace() {
                 ))}
               </div>
               <div style={{ marginTop: 10, display: "flex", gap: 4 }}>
-                <button onClick={() => setOpenPanes(AGENTS.map(a => a.id))} style={{
+                <button onClick={() => setOpenPanes(agents.map(a => a.id))} style={{
                   flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #2a2d3e",
                   backgroundColor: "#141722", color: "#94a3b8", fontSize: 10, fontWeight: 600,
                   cursor: "pointer",
@@ -360,6 +543,12 @@ export default function AgentWorkspace() {
                   cursor: "pointer",
                 }}>Close All</button>
               </div>
+              {/* Logout button */}
+              <button onClick={handleLogout} style={{
+                width: "100%", marginTop: 10, padding: "8px", borderRadius: 6,
+                border: "1px solid #2a2d3e", backgroundColor: "transparent",
+                color: "#ef4444", fontSize: 10, fontWeight: 600, cursor: "pointer",
+              }}>Sign Out</button>
             </div>
           </>
         )}
@@ -367,8 +556,9 @@ export default function AgentWorkspace() {
         {/* Collapsed sidebar — just icons */}
         {sidebarCollapsed && (
           <div style={{ flex: 1, overflowY: "auto", padding: "8px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            {AGENTS.map(agent => {
+            {agents.map(agent => {
               const isOpen = openPanes.includes(agent.id);
+              const isAgentStreaming = streaming[agent.id];
               return (
                 <button key={agent.id} onClick={() => togglePane(agent.id)} title={agent.name} style={{
                   width: 38, height: 38, borderRadius: 8, border: "none",
@@ -379,7 +569,7 @@ export default function AgentWorkspace() {
                   {agent.icon}
                   <span style={{
                     position: "absolute", top: 4, right: 4, width: 6, height: 6,
-                    borderRadius: "50%", backgroundColor: STATUS_CONFIG[agent.status].color,
+                    borderRadius: "50%", backgroundColor: STATUS_CONFIG[isAgentStreaming ? "computing" : (agent.status || "idle")].color,
                   }} />
                 </button>
               );
@@ -403,19 +593,8 @@ export default function AgentWorkspace() {
               {maximized ? "🔍 Focused view" : `📐 ${layout.charAt(0).toUpperCase() + layout.slice(1)} layout`}
             </span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
-                const count = AGENTS.filter(a => a.status === key).length;
-                if (!count) return null;
-                return (
-                  <span key={key} style={{ fontSize: 10, color: cfg.color, display: "flex", alignItems: "center", gap: 3 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: cfg.color }} />
-                    {count} {cfg.label.toLowerCase()}
-                  </span>
-                );
-              })}
-            </div>
+          <div style={{ fontSize: 11, color: "#475569" }}>
+            Powered by OpenRouter
           </div>
         </div>
 
@@ -435,7 +614,7 @@ export default function AgentWorkspace() {
             </div>
           ) : (
             visiblePanes.map(id => {
-              const agent = AGENTS.find(a => a.id === id);
+              const agent = agents.find(a => a.id === id);
               if (!agent) return null;
               return (
                 <ChatPane
@@ -446,6 +625,7 @@ export default function AgentWorkspace() {
                   onToggleMaximize={toggleMaximize}
                   onClose={closePane}
                   onSend={sendMessage}
+                  isStreaming={streaming[id]}
                 />
               );
             })
