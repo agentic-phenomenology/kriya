@@ -1,15 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import StatusDot from "./StatusDot";
 
-// Google 2026 theme (inline for now)
+// Google 2026 Dark theme
 const t = {
-  bg: '#f8fafc', bgSecondary: '#ffffff', bgTertiary: '#f1f5f9',
-  surface: '#ffffff', surfaceHover: '#f1f5f9', border: '#e2e8f0',
-  text: '#1f2937', textSecondary: '#4b5563', textMuted: '#9ca3af',
-  primary: '#1a73e8', primaryHover: '#1557b0', primaryBg: '#e8f0fe',
+  bg: '#0f1115', bgSecondary: '#161a1f', bgTertiary: '#1c2127',
+  surface: '#1c2127', surfaceHover: '#252b33', border: '#2a3038',
+  text: '#e8eaed', textSecondary: '#9aa0a6', textMuted: '#5f6368',
+  primary: '#8ab4f8', primaryHover: '#aecbfa', primaryBg: '#8ab4f815',
   radius: 12, radiusLg: 16, radiusXl: 24,
-  shadow: '0 1px 3px rgba(0,0,0,0.08)',
-  shadowLg: '0 4px 12px rgba(0,0,0,0.1)',
+  shadow: '0 1px 3px rgba(0,0,0,0.3)',
+  shadowLg: '0 4px 12px rgba(0,0,0,0.4)',
 };
 
 export default function ChatPane({ agent, messages, isMaximized, onToggleMaximize, onClose, onSend, onSettings, isStreaming, error }) {
@@ -118,9 +118,10 @@ export default function ChatPane({ agent, messages, isMaximized, onToggleMaximiz
                 maxWidth: "85%", padding: "12px 16px", 
                 borderRadius: msg.role === "user" ? `${t.radiusLg}px ${t.radiusLg}px 4px ${t.radiusLg}px` : `${t.radiusLg}px ${t.radiusLg}px ${t.radiusLg}px 4px`,
                 fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap",
-                backgroundColor: msg.role === "user" ? t.primary : t.surface,
-                color: msg.role === "user" ? "#ffffff" : t.text,
+                backgroundColor: msg.role === "user" ? '#394457' : t.surface,
+                color: msg.role === "user" ? "#e8eaed" : t.text,
                 boxShadow: t.shadow,
+                border: msg.role === "user" ? 'none' : `1px solid ${t.border}`,
               }}>
                 {msg.content || msg.text}
               </div>

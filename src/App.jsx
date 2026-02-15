@@ -7,11 +7,36 @@ import TasksView from "./components/TasksView";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
-// Theme: 'google2026' or 'originalDark'
-const THEME = 'google2026';
+// Theme: 'google2026Dark' or 'google2026Light' or 'originalDark'
+const THEME = 'google2026Dark';
 
 const themes = {
-  google2026: {
+  google2026Dark: {
+    bg: '#0f1115',
+    bgSecondary: '#161a1f',
+    bgTertiary: '#1c2127',
+    surface: '#1c2127',
+    surfaceHover: '#252b33',
+    border: '#2a3038',
+    borderFocus: '#8ab4f8',
+    text: '#e8eaed',
+    textSecondary: '#9aa0a6',
+    textMuted: '#5f6368',
+    primary: '#8ab4f8',
+    primaryHover: '#aecbfa',
+    primaryBg: '#8ab4f815',
+    accent: '#8ab4f8',
+    success: '#81c995',
+    warning: '#fdd663',
+    error: '#f28b82',
+    font: "'Google Sans', 'Roboto', -apple-system, sans-serif",
+    radius: 12,
+    radiusLg: 16,
+    radiusXl: 28,
+    shadow: '0 1px 3px rgba(0,0,0,0.3)',
+    shadowLg: '0 4px 12px rgba(0,0,0,0.4)',
+  },
+  google2026Light: {
     bg: '#f8fafc',
     bgSecondary: '#ffffff',
     bgTertiary: '#f1f5f9',

@@ -60,17 +60,30 @@ export default function Sidebar({
           <div>
             <div style={{ 
               fontSize: 20, fontWeight: 600, color: t.text, 
-              letterSpacing: "-0.5px", display: 'flex', alignItems: 'center', gap: 8
+              letterSpacing: "-0.5px", display: 'flex', alignItems: 'center', gap: 10
             }}>
-              <span style={{ 
-                width: 32, height: 32, borderRadius: 8, 
-                background: `linear-gradient(135deg, ${t.primary}, #7c4dff)`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: '#fff', fontSize: 16
-              }}>K</span>
+              {/* Antigravity-inspired logo: floating geometric shape */}
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                {/* Outer ring */}
+                <circle cx="16" cy="16" r="14" stroke={t.primary} strokeWidth="1.5" opacity="0.3"/>
+                {/* Floating triangle pointing up */}
+                <path 
+                  d="M16 6 L24 22 L8 22 Z" 
+                  fill="none" 
+                  stroke={t.primary} 
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                />
+                {/* Inner dot - center of gravity */}
+                <circle cx="16" cy="16" r="2" fill={t.primary}/>
+                {/* Motion lines */}
+                <line x1="12" y1="26" x2="12" y2="28" stroke={t.primary} strokeWidth="1.5" opacity="0.4"/>
+                <line x1="16" y1="26" x2="16" y2="29" stroke={t.primary} strokeWidth="1.5" opacity="0.6"/>
+                <line x1="20" y1="26" x2="20" y2="28" stroke={t.primary} strokeWidth="1.5" opacity="0.4"/>
+              </svg>
               Kriya
             </div>
-            <div style={{ fontSize: 12, color: t.textMuted, marginTop: 4, marginLeft: 40 }}>
+            <div style={{ fontSize: 12, color: t.textMuted, marginTop: 4, marginLeft: 42 }}>
               {agents.length} agents
             </div>
           </div>
