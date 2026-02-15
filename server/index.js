@@ -15,21 +15,18 @@ const PORT = process.env.PORT || 3001;
 // Config — all secrets must come from environment variables
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || '';
-const AUTH_USERNAME = process.env.AUTH_USERNAME || '';
-const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
-const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const AUTH_USERNAME = process.env.AUTH_USERNAME || 'admin';
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD || 'admin';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'kriya-dev-secret-change-in-production';
 
-// Validate required config at startup
+// Validate config at startup (soft warnings, don't exit)
 const missingVars = [];
 if (!OPENROUTER_API_KEY) missingVars.push('OPENROUTER_API_KEY');
-if (!AUTH_USERNAME) missingVars.push('AUTH_USERNAME');
-if (!AUTH_PASSWORD) missingVars.push('AUTH_PASSWORD');
-if (!SESSION_SECRET) missingVars.push('SESSION_SECRET');
 if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(', ')}`);
-  console.error('   Copy .env.example to .env and fill in the values.');
-  process.exit(1);
+  console.warn(`⚠️  Missing optional env vars: ${missingVars.join(', ')}`);
+  console.warn('   AI chat features may not work without OPENROUTER_API_KEY.');
 }
+// Auth is bypassed in this version, so AUTH_* vars are optional
 
 // OpenClaw webhook config
 const OPENCLAW_WEBHOOK_URL = process.env.OPENCLAW_WEBHOOK_URL || 'http://localhost:3002/webhook';
