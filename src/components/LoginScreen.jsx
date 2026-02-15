@@ -24,7 +24,7 @@ export default function LoginScreen({ onLogin, error }) {
       }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <div style={{ fontSize: 36, marginBottom: 8 }}>🤖</div>
-          <h1 style={{ color: "#f1f5f9", fontSize: 20, fontWeight: 700, margin: 0 }}>Agent Hub</h1>
+          <h1 style={{ color: "#f1f5f9", fontSize: 20, fontWeight: 700, margin: 0 }}>Kriya</h1>
           <p style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>Multi-agent workspace</p>
         </div>
 

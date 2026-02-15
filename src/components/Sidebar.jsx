@@ -34,7 +34,7 @@ export default function Sidebar({
       }}>
         {!sidebarCollapsed && (
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.3px" }}>Agent Hub</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.3px" }}>Kriya</div>
             <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>{agents.length} agents</div>
           </div>
         )}
