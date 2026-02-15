@@ -4,6 +4,7 @@ import session from 'express-session';
 import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { conversationDB, handoffDB, messageDB, generateId } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -101,104 +102,80 @@ function saveAgents(agents) {
   agentsCache = agents;
 }
 
-// Conversation storage (in-memory for now, could be SQLite)
-const conversations = {};
+// Conversation storage — now using SQLite via db.js
+// conversationDB.add(agentId, role, content) to store
+// conversationDB.get(agentId) to retrieve
 
-// Inter-agent message bus
+// Inter-agent message bus — SQLite-backed
 const agentBus = {
-  // Messages between agents
-  messages: [],
-  
-  // Pending handoffs (agent A passes task to agent B)
-  handoffs: [],
-  
-  // Agent status updates
-  statusUpdates: [],
-  
   // Send message from one agent to another
   send(fromAgent, toAgent, content, type = 'message') {
-    const msg = {
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
+    const id = generateId();
+    messageDB.send(id, fromAgent, toAgent, content, type);
+    return {
+      id,
       timestamp: new Date().toISOString(),
       from: fromAgent,
       to: toAgent,
       content,
-      type, // 'message', 'handoff', 'request', 'response'
+      type,
       read: false
     };
-    this.messages.push(msg);
-    
-    // Keep last 100 messages
-    if (this.messages.length > 100) {
-      this.messages = this.messages.slice(-100);
-    }
-    
-    return msg;
   },
   
   // Create a handoff (formal task transfer)
   createHandoff(fromAgent, toAgent, task, context = {}) {
-    const handoff = {
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
+    const id = generateId();
+    handoffDB.create(id, fromAgent, toAgent, task, context);
+    
+    // Also send as a message
+    this.send(fromAgent, toAgent, `HANDOFF: ${task}`, 'handoff');
+    
+    return {
+      id,
       timestamp: new Date().toISOString(),
       from: fromAgent,
       to: toAgent,
       task,
       context,
-      status: 'pending' // pending, accepted, completed, rejected
+      status: 'pending'
     };
-    this.handoffs.push(handoff);
-    
-    // Also send as a message
-    this.send(fromAgent, toAgent, `HANDOFF: ${task}`, 'handoff');
-    
-    return handoff;
   },
   
   // Update handoff status
   updateHandoff(handoffId, status, result = null) {
-    const handoff = this.handoffs.find(h => h.id === handoffId);
-    if (handoff) {
-      handoff.status = status;
-      handoff.result = result;
-      handoff.updatedAt = new Date().toISOString();
-    }
-    return handoff;
+    handoffDB.update(handoffId, status, result);
+    return handoffDB.get(handoffId);
   },
   
   // Get messages for an agent
   getMessagesFor(agentId) {
-    return this.messages.filter(m => m.to === agentId || m.to === 'all');
+    return messageDB.getFor(agentId, 100);
+  },
+  
+  // Get unread messages for an agent
+  getUnreadFor(agentId) {
+    return messageDB.getUnread(agentId);
+  },
+  
+  // Mark message as read
+  markRead(messageId) {
+    return messageDB.markRead(messageId);
   },
   
   // Get all activity (for Overview)
   getAllActivity(limit = 50) {
-    const allActivity = [
-      ...this.messages.map(m => ({ ...m, activityType: 'message' })),
-      ...this.handoffs.map(h => ({ ...h, activityType: 'handoff' }))
-    ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    
-    return allActivity.slice(0, limit);
+    return messageDB.getAllActivity(limit);
   },
   
   // Get pending handoffs
   getPendingHandoffs() {
-    return this.handoffs.filter(h => h.status === 'pending');
+    return handoffDB.getPending();
   },
   
-  // Log status update
-  logStatus(agentId, status, details = '') {
-    this.statusUpdates.push({
-      timestamp: new Date().toISOString(),
-      agentId,
-      status,
-      details
-    });
-    
-    // Keep last 50 status updates
-    if (this.statusUpdates.length > 50) {
-      this.statusUpdates = this.statusUpdates.slice(-50);
-    }
+  // Get all handoffs
+  getAllHandoffs(limit = 50) {
+    return handoffDB.getAll(limit);
   }
 };
 
@@ -365,14 +342,9 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Agent not found' });
   }
 
-  // Store conversation
-  if (!conversations[agentId]) {
-    conversations[agentId] = [];
-  }
-  
-  // Add user message to history
+  // Store user message in SQLite
   const userMessage = messages[messages.length - 1];
-  conversations[agentId].push(userMessage);
+  conversationDB.add(agentId, userMessage.role, userMessage.content);
 
   // Build messages with system prompt
   let systemContent = agent.systemPrompt;
@@ -384,14 +356,15 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       timestamp: new Date().toISOString(),
       agentSummaries: {},
       pendingHandoffs: agentBus.getPendingHandoffs(),
-      recentInterAgentMessages: agentBus.messages.slice(-10)
+      recentInterAgentMessages: agentBus.getAllActivity(10)
     };
     
-    // Build agent summaries
+    // Build agent summaries from SQLite
     for (const [id, config] of Object.entries(agents)) {
       if (id !== 'overview') {
-        const history = conversations[id] || [];
+        const history = conversationDB.get(id);
         const lastMsg = history[history.length - 1];
+        const pendingHandoffs = agentBus.getPendingHandoffs();
         overviewContext.agentSummaries[id] = {
           name: config.name,
           icon: config.icon,
@@ -400,8 +373,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             role: lastMsg.role,
             preview: (lastMsg.content || '').substring(0, 200)
           } : null,
-          pendingHandoffsTo: agentBus.handoffs.filter(h => h.to === id && h.status === 'pending').length,
-          pendingHandoffsFrom: agentBus.handoffs.filter(h => h.from === id && h.status === 'pending').length
+          pendingHandoffsTo: pendingHandoffs.filter(h => h.to_agent === id).length,
+          pendingHandoffsFrom: pendingHandoffs.filter(h => h.from_agent === id).length
         };
       }
     }
@@ -410,12 +383,12 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   }
   
   // Special handling for other agents - inject their inbox
-  const inbox = agentBus.getMessagesFor(agentId).filter(m => !m.read);
+  const inbox = agentBus.getUnreadFor(agentId);
   if (inbox.length > 0 && agentId !== 'overview') {
-    const inboxContext = inbox.map(m => `[${m.from}]: ${m.content}`).join('\n');
+    const inboxContext = inbox.map(m => `[${m.from_agent}]: ${m.content}`).join('\n');
     systemContent += `\n\n--- MESSAGES FROM OTHER AGENTS ---\n${inboxContext}\n--- END MESSAGES ---`;
     // Mark as read
-    inbox.forEach(m => m.read = true);
+    inbox.forEach(m => agentBus.markRead(m.id));
   }
   
   const apiMessages = [
@@ -499,8 +472,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
         const data = trimmed.slice(6);
         if (data === '[DONE]') {
-          // Store assistant response
-          conversations[agentId].push({ role: 'assistant', content: fullResponse });
+          // Store assistant response in SQLite
+          conversationDB.add(agentId, 'assistant', fullResponse);
 
           // Process any inter-agent commands in the response
           processAgentCommands(agentId, fullResponse);
@@ -535,15 +508,15 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   res.end();
 });
 
-// Get conversation history
+// Get conversation history from SQLite
 app.get('/api/conversations/:agentId', requireAuth, (req, res) => {
-  const history = conversations[req.params.agentId] || [];
+  const history = conversationDB.get(req.params.agentId);
   res.json(history);
 });
 
 // Clear conversation
 app.delete('/api/conversations/:agentId', requireAuth, (req, res) => {
-  conversations[req.params.agentId] = [];
+  conversationDB.clear(req.params.agentId);
   res.json({ success: true });
 });
 
@@ -640,46 +613,31 @@ app.get('/api/activity', requireAuth, (req, res) => {
 // ============ OVERVIEW SPECIAL ROUTE ============
 
 app.get('/api/overview', requireAuth, (req, res) => {
-  // Comprehensive summary for Overview agent
+  // Comprehensive summary for Overview agent — using SQLite
   const agents = loadAgents();
+  const pendingHandoffs = agentBus.getPendingHandoffs();
   const summary = {
     conversations: {},
-    pendingHandoffs: agentBus.getPendingHandoffs(),
+    pendingHandoffs,
     recentActivity: agentBus.getAllActivity(20),
     agentStatuses: {}
   };
   
-  // Conversation summaries per agent
-  for (const [agentId, history] of Object.entries(conversations)) {
+  // Conversation summaries per agent from SQLite
+  for (const [agentId, agentConfig] of Object.entries(agents)) {
     if (agentId !== 'overview') {
-      const agentConfig = agents[agentId];
+      const history = conversationDB.get(agentId);
       summary.conversations[agentId] = {
-        name: agentConfig?.name || agentId,
-        icon: agentConfig?.icon || '🤖',
+        name: agentConfig.name,
+        icon: agentConfig.icon,
         messageCount: history.length,
         lastActivity: history.length > 0 ? 'active' : 'idle',
         lastMessages: history.slice(-3).map(m => ({
           role: m.role,
           preview: m.content?.substring(0, 150) + (m.content?.length > 150 ? '...' : '')
         })),
-        // Include any pending handoffs to/from this agent
-        pendingTo: agentBus.handoffs.filter(h => h.to === agentId && h.status === 'pending'),
-        pendingFrom: agentBus.handoffs.filter(h => h.from === agentId && h.status === 'pending')
-      };
-    }
-  }
-  
-  // Add agents with no conversations yet
-  for (const [agentId, agentConfig] of Object.entries(agents)) {
-    if (agentId !== 'overview' && !summary.conversations[agentId]) {
-      summary.conversations[agentId] = {
-        name: agentConfig.name,
-        icon: agentConfig.icon,
-        messageCount: 0,
-        lastActivity: 'idle',
-        lastMessages: [],
-        pendingTo: agentBus.handoffs.filter(h => h.to === agentId && h.status === 'pending'),
-        pendingFrom: agentBus.handoffs.filter(h => h.from === agentId && h.status === 'pending')
+        pendingTo: pendingHandoffs.filter(h => h.to_agent === agentId),
+        pendingFrom: pendingHandoffs.filter(h => h.from_agent === agentId)
       };
     }
   }
