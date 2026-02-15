@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import StatusDot from "./StatusDot";
 
-export default function ChatPane({ agent, messages, isMaximized, onToggleMaximize, onClose, onSend, isStreaming, error }) {
+export default function ChatPane({ agent, messages, isMaximized, onToggleMaximize, onClose, onSend, onSettings, isStreaming, error }) {
   const [input, setInput] = useState("");
   const scrollRef = useRef(null);
 
@@ -41,6 +41,10 @@ export default function ChatPane({ agent, messages, isMaximized, onToggleMaximiz
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => onSettings(agent)} style={{
+            background: "none", border: "none", color: "#64748b", cursor: "pointer",
+            padding: "4px 6px", borderRadius: 4, fontSize: 14,
+          }} title="Agent settings">⚙</button>
           <button onClick={() => onToggleMaximize(agent.id)} style={{
             background: "none", border: "none", color: "#64748b", cursor: "pointer",
             padding: "4px 6px", borderRadius: 4, fontSize: 14,

@@ -51,6 +51,42 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
   CREATE INDEX IF NOT EXISTS idx_handoffs_to ON handoffs(to_agent);
 
+  -- User agent settings (synced across devices)
+  CREATE TABLE IF NOT EXISTS user_agent_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    model TEXT,
+    temperature REAL,
+    max_tokens INTEGER,
+    system_prompt TEXT,
+    color TEXT,
+    icon TEXT,
+    display_order INTEGER,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, agent_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_settings_user ON user_agent_settings(user_id);
+
+  -- Custom agents created by users
+  CREATE TABLE IF NOT EXISTS custom_agents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '🤖',
+    color TEXT DEFAULT '#6366f1',
+    model TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    temperature REAL DEFAULT 0.7,
+    max_tokens INTEGER DEFAULT 4096,
+    display_order INTEGER DEFAULT 999,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_custom_agents_user ON custom_agents(user_id);
+
   -- Inter-agent messages
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -64,6 +100,21 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent);
   CREATE INDEX IF NOT EXISTS idx_messages_read ON messages(read);
+
+  -- OpenClaw bridge queue (for routing messages to real Computer the Cat)
+  CREATE TABLE IF NOT EXISTS openclaw_queue (
+    id TEXT PRIMARY KEY,
+    direction TEXT NOT NULL CHECK(direction IN ('to_openclaw', 'from_openclaw')),
+    conversation_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed')),
+    response TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openclaw_queue_status ON openclaw_queue(status);
+  CREATE INDEX IF NOT EXISTS idx_openclaw_queue_conv ON openclaw_queue(conversation_id);
 `);
 
 // Prepared statements for performance
@@ -155,6 +206,91 @@ const stmts = {
     FROM messages
     ORDER BY timestamp DESC
     LIMIT ?
+  `),
+
+  // User Agent Settings
+  getSettings: db.prepare(`
+    SELECT * FROM user_agent_settings WHERE user_id = ? AND agent_id = ?
+  `),
+  
+  getAllSettings: db.prepare(`
+    SELECT * FROM user_agent_settings WHERE user_id = ? ORDER BY display_order ASC
+  `),
+  
+  upsertSettings: db.prepare(`
+    INSERT INTO user_agent_settings (user_id, agent_id, model, temperature, max_tokens, system_prompt, color, icon, display_order, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, agent_id) DO UPDATE SET
+      model = COALESCE(excluded.model, model),
+      temperature = COALESCE(excluded.temperature, temperature),
+      max_tokens = COALESCE(excluded.max_tokens, max_tokens),
+      system_prompt = COALESCE(excluded.system_prompt, system_prompt),
+      color = COALESCE(excluded.color, color),
+      icon = COALESCE(excluded.icon, icon),
+      display_order = COALESCE(excluded.display_order, display_order),
+      updated_at = CURRENT_TIMESTAMP
+  `),
+  
+  updateAgentOrder: db.prepare(`
+    INSERT INTO user_agent_settings (user_id, agent_id, display_order, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, agent_id) DO UPDATE SET
+      display_order = excluded.display_order,
+      updated_at = CURRENT_TIMESTAMP
+  `),
+
+  // Custom Agents
+  createCustomAgent: db.prepare(`
+    INSERT INTO custom_agents (id, user_id, name, icon, color, model, system_prompt, temperature, max_tokens, display_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `),
+  
+  getCustomAgents: db.prepare(`
+    SELECT * FROM custom_agents WHERE user_id = ? ORDER BY display_order ASC
+  `),
+  
+  getCustomAgent: db.prepare(`
+    SELECT * FROM custom_agents WHERE id = ?
+  `),
+  
+  updateCustomAgent: db.prepare(`
+    UPDATE custom_agents SET
+      name = COALESCE(?, name),
+      icon = COALESCE(?, icon),
+      color = COALESCE(?, color),
+      model = COALESCE(?, model),
+      system_prompt = COALESCE(?, system_prompt),
+      temperature = COALESCE(?, temperature),
+      max_tokens = COALESCE(?, max_tokens),
+      display_order = COALESCE(?, display_order),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `),
+  
+  deleteCustomAgent: db.prepare(`
+    DELETE FROM custom_agents WHERE id = ? AND user_id = ?
+  `),
+
+  // OpenClaw Queue
+  queueToOpenclaw: db.prepare(`
+    INSERT INTO openclaw_queue (id, direction, conversation_id, content, status)
+    VALUES (?, 'to_openclaw', ?, ?, 'pending')
+  `),
+  
+  getOpenclawPending: db.prepare(`
+    SELECT * FROM openclaw_queue 
+    WHERE direction = 'to_openclaw' AND status = 'pending'
+    ORDER BY created_at ASC
+  `),
+  
+  updateOpenclawStatus: db.prepare(`
+    UPDATE openclaw_queue 
+    SET status = ?, response = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `),
+  
+  getOpenclawMessage: db.prepare(`
+    SELECT * FROM openclaw_queue WHERE id = ?
   `)
 };
 
@@ -254,6 +390,111 @@ export const messageDB = {
 
   getAllActivity(limit = 50) {
     return stmts.getAllActivity.all(limit);
+  }
+};
+
+// User Settings API
+export const settingsDB = {
+  get(userId, agentId) {
+    return stmts.getSettings.get(userId, agentId);
+  },
+
+  getAll(userId) {
+    return stmts.getAllSettings.all(userId);
+  },
+
+  upsert(userId, agentId, settings) {
+    return stmts.upsertSettings.run(
+      userId, agentId,
+      settings.model || null,
+      settings.temperature ?? null,
+      settings.maxTokens ?? null,
+      settings.systemPrompt || null,
+      settings.color || null,
+      settings.icon || null,
+      settings.displayOrder ?? null
+    );
+  },
+
+  updateOrder(userId, agentOrders) {
+    // agentOrders is array of { agentId, order }
+    const tx = db.transaction(() => {
+      for (const { agentId, order } of agentOrders) {
+        stmts.updateAgentOrder.run(userId, agentId, order);
+      }
+    });
+    tx();
+  }
+};
+
+// Custom Agents API
+export const customAgentsDB = {
+  create(userId, agent) {
+    const id = `custom_${generateId()}`;
+    stmts.createCustomAgent.run(
+      id, userId,
+      agent.name,
+      agent.icon || '🤖',
+      agent.color || '#6366f1',
+      agent.model,
+      agent.systemPrompt,
+      agent.temperature ?? 0.7,
+      agent.maxTokens ?? 4096,
+      agent.displayOrder ?? 999
+    );
+    return { id, ...agent };
+  },
+
+  getAll(userId) {
+    return stmts.getCustomAgents.all(userId);
+  },
+
+  get(id) {
+    return stmts.getCustomAgent.get(id);
+  },
+
+  update(id, updates) {
+    stmts.updateCustomAgent.run(
+      updates.name || null,
+      updates.icon || null,
+      updates.color || null,
+      updates.model || null,
+      updates.systemPrompt || null,
+      updates.temperature ?? null,
+      updates.maxTokens ?? null,
+      updates.displayOrder ?? null,
+      id
+    );
+    return stmts.getCustomAgent.get(id);
+  },
+
+  delete(id, userId) {
+    return stmts.deleteCustomAgent.run(id, userId);
+  }
+};
+
+// OpenClaw Queue API
+export const openclawDB = {
+  queue(conversationId, content) {
+    const id = generateId();
+    stmts.queueToOpenclaw.run(id, conversationId, content);
+    return id;
+  },
+
+  getPending() {
+    return stmts.getOpenclawPending.all();
+  },
+
+  complete(id, response) {
+    stmts.updateOpenclawStatus.run('completed', response, id);
+  },
+
+  get(id) {
+    return stmts.getOpenclawMessage.get(id);
+  },
+
+  setProcessing(id) {
+    stmts.updateOpenclawStatus.run('processing', null, id);
   }
 };
 

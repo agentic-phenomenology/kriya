@@ -4,7 +4,7 @@ import session from 'express-session';
 import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { conversationDB, handoffDB, messageDB, generateId } from './db.js';
+import db, { conversationDB, handoffDB, messageDB, settingsDB, customAgentsDB, openclawDB, generateId } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,6 +31,10 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 
+// OpenClaw webhook config
+const OPENCLAW_WEBHOOK_URL = process.env.OPENCLAW_WEBHOOK_URL || 'http://localhost:3002/webhook';
+const OPENCLAW_WEBHOOK_SECRET = process.env.OPENCLAW_WEBHOOK_SECRET || '';
+
 // Provider configurations
 const PROVIDERS = {
   openrouter: {
@@ -41,6 +45,10 @@ const PROVIDERS = {
       'HTTP-Referer': 'https://agent-workspace.local',
       'X-Title': 'Agent Workspace'
     })
+  },
+  openclaw: {
+    // Special provider that routes to the real Computer the Cat
+    isWebhook: true
   },
   dashscope: {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -100,6 +108,38 @@ function loadAgents() {
 function saveAgents(agents) {
   writeFileSync(agentsCachePath, JSON.stringify(agents, null, 2));
   agentsCache = agents;
+}
+
+// Merge default agent config with user's custom settings
+function getAgentWithUserSettings(agentConfig, userSettings) {
+  if (!userSettings) return agentConfig;
+  return {
+    ...agentConfig,
+    model: userSettings.model || agentConfig.model,
+    temperature: userSettings.temperature ?? agentConfig.temperature,
+    maxTokens: userSettings.max_tokens ?? agentConfig.maxTokens,
+    systemPrompt: userSettings.system_prompt || agentConfig.systemPrompt,
+    color: userSettings.color || agentConfig.color,
+    icon: userSettings.icon || agentConfig.icon,
+    displayOrder: userSettings.display_order ?? agentConfig.displayOrder
+  };
+}
+
+// Convert custom agent DB row to agent config format
+function customAgentToConfig(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    icon: row.icon,
+    color: row.color,
+    model: row.model,
+    systemPrompt: row.system_prompt,
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    displayOrder: row.display_order,
+    group: 'Custom',
+    isCustom: true
+  };
 }
 
 // Conversation storage — now using SQLite via db.js
@@ -258,18 +298,56 @@ app.get('/api/auth/status', (req, res) => {
 // ============ AGENT ROUTES ============
 
 app.get('/api/agents', requireAuth, (req, res) => {
-  const agents = loadAgents();
-  // Return agents without system prompts (security)
-  const publicAgents = Object.values(agents).map(a => ({
-    id: a.id,
-    name: a.name,
-    icon: a.icon,
-    color: a.color,
-    group: a.group,
-    model: a.model,
-    status: 'idle'
-  }));
-  res.json(publicAgents);
+  const userId = req.session.user;
+  const defaultAgents = loadAgents();
+  const userSettings = settingsDB.getAll(userId);
+  const customAgents = customAgentsDB.getAll(userId);
+  
+  // Build settings lookup
+  const settingsMap = {};
+  for (const s of userSettings) {
+    settingsMap[s.agent_id] = s;
+  }
+  
+  // Merge default agents with user settings
+  const mergedAgents = Object.values(defaultAgents).map(a => {
+    const merged = getAgentWithUserSettings(a, settingsMap[a.id]);
+    return {
+      id: merged.id,
+      name: merged.name,
+      icon: merged.icon,
+      color: merged.color,
+      group: merged.group,
+      model: merged.model,
+      temperature: merged.temperature,
+      maxTokens: merged.maxTokens,
+      displayOrder: merged.displayOrder ?? 100,
+      status: 'idle',
+      isCustom: false
+    };
+  });
+  
+  // Add custom agents
+  for (const ca of customAgents) {
+    mergedAgents.push({
+      id: ca.id,
+      name: ca.name,
+      icon: ca.icon,
+      color: ca.color,
+      group: 'Custom',
+      model: ca.model,
+      temperature: ca.temperature,
+      maxTokens: ca.max_tokens,
+      displayOrder: ca.display_order ?? 999,
+      status: 'idle',
+      isCustom: true
+    });
+  }
+  
+  // Sort by displayOrder
+  mergedAgents.sort((a, b) => (a.displayOrder ?? 100) - (b.displayOrder ?? 100));
+  
+  res.json(mergedAgents);
 });
 
 app.get('/api/agents/:id', requireAuth, (req, res) => {
@@ -288,30 +366,127 @@ app.get('/api/agents/:id', requireAuth, (req, res) => {
   });
 });
 
-// Update agent model on the fly
-app.patch('/api/agents/:id', requireAuth, (req, res) => {
-  const agents = loadAgents();
-  const agent = agents[req.params.id];
+// Update agent settings (user-specific, synced)
+app.patch('/api/agents/:id/settings', requireAuth, (req, res) => {
+  const userId = req.session.user;
+  const agentId = req.params.id;
+  const { model, temperature, maxTokens, systemPrompt, color, icon } = req.body;
   
-  if (!agent) {
-    return res.status(404).json({ error: 'Agent not found' });
+  // Validate inputs
+  const settings = {};
+  if (model && typeof model === 'string') settings.model = model.slice(0, 200);
+  if (temperature !== undefined) {
+    const temp = Number(temperature);
+    if (!isNaN(temp) && temp >= 0 && temp <= 2) settings.temperature = temp;
   }
+  if (maxTokens !== undefined) {
+    const tokens = Number(maxTokens);
+    if (!isNaN(tokens) && tokens > 0 && tokens <= 128000) settings.maxTokens = tokens;
+  }
+  if (systemPrompt && typeof systemPrompt === 'string') settings.systemPrompt = systemPrompt.slice(0, 50000);
+  if (color && typeof color === 'string') settings.color = color.slice(0, 20);
+  if (icon && typeof icon === 'string') settings.icon = icon.slice(0, 10);
   
-  // Allow updating model, temperature, maxTokens
-  if (req.body.model && typeof req.body.model === 'string') {
-    agent.model = req.body.model.slice(0, 200);
-  }
-  if (req.body.temperature !== undefined) {
-    const temp = Number(req.body.temperature);
-    if (!isNaN(temp) && temp >= 0 && temp <= 2) agent.temperature = temp;
-  }
-  if (req.body.maxTokens !== undefined) {
-    const tokens = Number(req.body.maxTokens);
-    if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) agent.maxTokens = tokens;
-  }
+  settingsDB.upsert(userId, agentId, settings);
+  
+  // Return merged settings
+  const userSettings = settingsDB.get(userId, agentId);
+  res.json({ success: true, settings: userSettings });
+});
 
-  saveAgents(agents);
+// Update agent order (drag-and-drop reordering)
+app.put('/api/agents/order', requireAuth, (req, res) => {
+  const userId = req.session.user;
+  const { order } = req.body;
+  
+  if (!Array.isArray(order)) {
+    return res.status(400).json({ error: 'order must be an array of { agentId, order }' });
+  }
+  
+  // Validate and sanitize
+  const agentOrders = order.map((item, idx) => ({
+    agentId: String(item.agentId || item.id).slice(0, 100),
+    order: typeof item.order === 'number' ? item.order : idx
+  }));
+  
+  settingsDB.updateOrder(userId, agentOrders);
+  res.json({ success: true });
+});
+
+// Create custom agent
+app.post('/api/agents', requireAuth, (req, res) => {
+  const userId = req.session.user;
+  const { name, icon, color, model, systemPrompt, temperature, maxTokens } = req.body;
+  
+  if (!name || typeof name !== 'string' || name.length < 1) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  if (!model || typeof model !== 'string') {
+    return res.status(400).json({ error: 'model is required' });
+  }
+  if (!systemPrompt || typeof systemPrompt !== 'string') {
+    return res.status(400).json({ error: 'systemPrompt is required' });
+  }
+  
+  const agent = customAgentsDB.create(userId, {
+    name: name.slice(0, 100),
+    icon: icon?.slice(0, 10) || '🤖',
+    color: color?.slice(0, 20) || '#6366f1',
+    model: model.slice(0, 200),
+    systemPrompt: systemPrompt.slice(0, 50000),
+    temperature: typeof temperature === 'number' ? Math.min(2, Math.max(0, temperature)) : 0.7,
+    maxTokens: typeof maxTokens === 'number' ? Math.min(128000, Math.max(1, maxTokens)) : 4096
+  });
+  
   res.json({ success: true, agent });
+});
+
+// Update custom agent
+app.put('/api/agents/:id', requireAuth, (req, res) => {
+  const agentId = req.params.id;
+  
+  // Check if it's a custom agent
+  if (!agentId.startsWith('custom_')) {
+    return res.status(400).json({ error: 'Can only directly update custom agents. Use PATCH /api/agents/:id/settings for default agents.' });
+  }
+  
+  const { name, icon, color, model, systemPrompt, temperature, maxTokens } = req.body;
+  const updates = {};
+  
+  if (name) updates.name = String(name).slice(0, 100);
+  if (icon) updates.icon = String(icon).slice(0, 10);
+  if (color) updates.color = String(color).slice(0, 20);
+  if (model) updates.model = String(model).slice(0, 200);
+  if (systemPrompt) updates.systemPrompt = String(systemPrompt).slice(0, 50000);
+  if (temperature !== undefined) updates.temperature = Math.min(2, Math.max(0, Number(temperature)));
+  if (maxTokens !== undefined) updates.maxTokens = Math.min(128000, Math.max(1, Number(maxTokens)));
+  
+  const updated = customAgentsDB.update(agentId, updates);
+  if (!updated) {
+    return res.status(404).json({ error: 'Custom agent not found' });
+  }
+  
+  res.json({ success: true, agent: updated });
+});
+
+// Delete custom agent
+app.delete('/api/agents/:id', requireAuth, (req, res) => {
+  const userId = req.session.user;
+  const agentId = req.params.id;
+  
+  if (!agentId.startsWith('custom_')) {
+    return res.status(400).json({ error: 'Can only delete custom agents' });
+  }
+  
+  const result = customAgentsDB.delete(agentId, userId);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Custom agent not found' });
+  }
+  
+  // Also clear conversation history
+  conversationDB.clear(agentId);
+  
+  res.json({ success: true });
 });
 
 // ============ CHAT ROUTES ============
@@ -335,8 +510,24 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     }
   }
 
-  const agents = loadAgents();
-  const agent = agents[agentId];
+  const userId = req.session.user;
+  let agent;
+  
+  // Check if it's a custom agent
+  if (agentId.startsWith('custom_')) {
+    const customAgent = customAgentsDB.get(agentId);
+    if (customAgent) {
+      agent = customAgentToConfig(customAgent);
+    }
+  } else {
+    // Default agent - merge with user settings
+    const defaultAgents = loadAgents();
+    const defaultAgent = defaultAgents[agentId];
+    if (defaultAgent) {
+      const userSettings = settingsDB.get(userId, agentId);
+      agent = getAgentWithUserSettings(defaultAgent, userSettings);
+    }
+  }
 
   if (!agent) {
     return res.status(404).json({ error: 'Agent not found' });
@@ -346,12 +537,69 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const userMessage = messages[messages.length - 1];
   conversationDB.add(agentId, userMessage.role, userMessage.content);
 
+  // ========== SPECIAL HANDLING: Computer the Cat (OpenClaw Bridge) ==========
+  // Route messages to the real Computer via queue-based polling
+  if (agent.name === 'Computer the Cat') {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Queue the message for Computer to pick up
+    const queueId = openclawDB.queue(agentId, JSON.stringify({
+      messages: messages,
+      user: userId,
+      timestamp: new Date().toISOString()
+    }));
+
+    console.log(`🐱 Queued message for Computer the Cat: ${queueId}`);
+
+    // Poll for response (with timeout)
+    const maxWait = 120000; // 2 minutes
+    const pollInterval = 500; // 500ms
+    const startTime = Date.now();
+    let responded = false;
+
+    const pollForResponse = async () => {
+      while (Date.now() - startTime < maxWait && !responded) {
+        const msg = openclawDB.get(queueId);
+        if (msg && msg.status === 'completed' && msg.response) {
+          responded = true;
+          const response = msg.response;
+          
+          // Store in conversation
+          conversationDB.add(agentId, 'assistant', response);
+          
+          // Stream the response (simulate streaming for consistency)
+          const words = response.split(' ');
+          for (const word of words) {
+            res.write(`data: ${JSON.stringify({ content: word + ' ' })}\n\n`);
+            await new Promise(r => setTimeout(r, 20));
+          }
+          res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+          res.end();
+          return;
+        }
+        await new Promise(r => setTimeout(r, pollInterval));
+      }
+
+      if (!responded) {
+        res.write(`data: ${JSON.stringify({ content: '*purrs while thinking...*\n\n(Response pending - Computer is processing. Check back or refresh.)' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        res.end();
+      }
+    };
+
+    pollForResponse();
+    return;
+  }
+  // ========== END OPENCLAW BRIDGE ==========
+
   // Build messages with system prompt
   let systemContent = agent.systemPrompt;
   
   // Special handling for Overview agent - inject current system state
   if (agentId === 'overview') {
-    const agents = loadAgents();
+    const allAgents = loadAgents();
     const overviewContext = {
       timestamp: new Date().toISOString(),
       agentSummaries: {},
@@ -360,7 +608,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     };
     
     // Build agent summaries from SQLite
-    for (const [id, config] of Object.entries(agents)) {
+    for (const [id, config] of Object.entries(allAgents)) {
       if (id !== 'overview') {
         const history = conversationDB.get(id);
         const lastMsg = history[history.length - 1];
@@ -610,6 +858,81 @@ app.get('/api/activity', requireAuth, (req, res) => {
   res.json(activity);
 });
 
+// ============ TASKS ROUTES (Asana-like views on handoffs) ============
+
+// List all tasks (handoffs)
+app.get('/api/tasks', requireAuth, (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const tasks = handoffDB.getAll(limit);
+  res.json(tasks);
+});
+
+// Create a new task
+app.post('/api/tasks', requireAuth, (req, res) => {
+  const { task, from_agent, to_agent, status, context } = req.body;
+  
+  if (!task || typeof task !== 'string') {
+    return res.status(400).json({ error: 'task description is required' });
+  }
+  if (!from_agent || !to_agent) {
+    return res.status(400).json({ error: 'from_agent and to_agent are required' });
+  }
+  
+  const id = generateId();
+  handoffDB.create(id, from_agent, to_agent, task.slice(0, 10000), context || {});
+  
+  // Update status if provided (defaults to 'pending')
+  if (status && ['pending', 'accepted', 'completed', 'rejected'].includes(status)) {
+    handoffDB.update(id, status, null);
+  }
+  
+  const created = handoffDB.get(id);
+  res.json(created);
+});
+
+// Update a task
+app.patch('/api/tasks/:id', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const { status, result, task, from_agent, to_agent } = req.body;
+  
+  const existing = handoffDB.get(id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+  
+  // For now, we only support updating status and result through the existing API
+  // To update other fields, we'd need to extend the DB schema/methods
+  if (status) {
+    const validStatuses = ['pending', 'accepted', 'completed', 'rejected'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+    }
+    handoffDB.update(id, status, result || existing.result);
+  }
+  
+  const updated = handoffDB.get(id);
+  res.json(updated);
+});
+
+// Delete a task
+app.delete('/api/tasks/:id', requireAuth, (req, res) => {
+  const { id } = req.params;
+  
+  const existing = handoffDB.get(id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+  
+  // Delete from database (need to add this method)
+  try {
+    const stmt = db.prepare('DELETE FROM handoffs WHERE id = ?');
+    stmt.run(id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete task' });
+  }
+});
+
 // ============ OVERVIEW SPECIAL ROUTE ============
 
 app.get('/api/overview', requireAuth, (req, res) => {
@@ -643,6 +966,53 @@ app.get('/api/overview', requireAuth, (req, res) => {
   }
   
   res.json(summary);
+});
+
+// ============ OPENCLAW BRIDGE ROUTES ============
+// These allow the real Computer the Cat to poll for messages and respond
+
+// Get pending messages for OpenClaw (Computer polls this)
+app.get('/api/openclaw/pending', (req, res) => {
+  // Simple auth via secret header
+  const secret = req.headers['x-openclaw-secret'];
+  if (secret !== OPENCLAW_WEBHOOK_SECRET && OPENCLAW_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Invalid secret' });
+  }
+  
+  const pending = openclawDB.getPending();
+  res.json(pending);
+});
+
+// Submit response from OpenClaw
+app.post('/api/openclaw/:id/respond', (req, res) => {
+  const secret = req.headers['x-openclaw-secret'];
+  if (secret !== OPENCLAW_WEBHOOK_SECRET && OPENCLAW_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Invalid secret' });
+  }
+  
+  const { id } = req.params;
+  const { response } = req.body;
+  
+  if (!response) {
+    return res.status(400).json({ error: 'response is required' });
+  }
+  
+  openclawDB.complete(id, response);
+  res.json({ success: true });
+});
+
+// Check if a specific message has a response (for polling)
+app.get('/api/openclaw/:id', (req, res) => {
+  const secret = req.headers['x-openclaw-secret'];
+  if (secret !== OPENCLAW_WEBHOOK_SECRET && OPENCLAW_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Invalid secret' });
+  }
+  
+  const msg = openclawDB.get(req.params.id);
+  if (!msg) {
+    return res.status(404).json({ error: 'Message not found' });
+  }
+  res.json(msg);
 });
 
 // ============ MODELS ROUTE ============

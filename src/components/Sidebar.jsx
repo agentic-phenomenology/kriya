@@ -1,6 +1,8 @@
 import StatusDot from "./StatusDot";
 import { STATUS_CONFIG } from "./statusConfig";
 
+import { useState } from "react";
+
 export default function Sidebar({
   agents,
   openPanes,
@@ -15,7 +17,14 @@ export default function Sidebar({
   onLogout,
   onShowAll,
   onCloseAll,
+  onCreateAgent,
+  onReorderAgents,
+  onAgentSettings,
+  activeView,
+  onViewChange,
 }) {
+  const [draggedId, setDraggedId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
   const groups = ["All", ...new Set(agents.map(a => a.group))];
   const filteredAgents = filterGroup === "All" ? agents : agents.filter(a => a.group === filterGroup);
 
@@ -48,48 +57,173 @@ export default function Sidebar({
 
       {!sidebarCollapsed && (
         <>
-          {/* Group filter tabs */}
+          {/* Main view toggle */}
           <div style={{
-            display: "flex", gap: 4, padding: "10px 12px", flexWrap: "wrap",
+            display: "flex", padding: "8px 12px", gap: 4,
             borderBottom: "1px solid #1e2130",
           }}>
-            {groups.map(g => (
-              <button key={g} onClick={() => setFilterGroup(g)} style={{
-                padding: "3px 10px", borderRadius: 12, fontSize: 10,
-                fontWeight: 600, cursor: "pointer", transition: "all 0.15s",
-                backgroundColor: filterGroup === g ? "#6366f120" : "#141722",
-                color: filterGroup === g ? "#818cf8" : "#64748b",
-                border: filterGroup === g ? "1px solid #6366f140" : "1px solid transparent",
-              }}>{g}</button>
-            ))}
+            <button
+              onClick={() => onViewChange?.('agents')}
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                backgroundColor: activeView === 'agents' ? '#3b82f6' : '#141722',
+                color: activeView === 'agents' ? '#fff' : '#94a3b8',
+                fontSize: 12, fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                transition: "all 0.15s",
+              }}
+            >
+              🤖 Agents
+            </button>
+            <button
+              onClick={() => onViewChange?.('tasks')}
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                backgroundColor: activeView === 'tasks' ? '#3b82f6' : '#141722',
+                color: activeView === 'tasks' ? '#fff' : '#94a3b8',
+                fontSize: 12, fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                transition: "all 0.15s",
+              }}
+            >
+              📋 Tasks
+            </button>
           </div>
 
-          {/* Agent list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
+          {/* Group filter tabs (only in agents view) */}
+          {activeView === 'agents' && (
+            <>
+              <div style={{
+                display: "flex", gap: 4, padding: "10px 12px", flexWrap: "wrap",
+                borderBottom: "1px solid #1e2130",
+              }}>
+                {groups.map(g => (
+                  <button key={g} onClick={() => setFilterGroup(g)} style={{
+                    padding: "3px 10px", borderRadius: 12, fontSize: 10,
+                    fontWeight: 600, cursor: "pointer", transition: "all 0.15s",
+                    backgroundColor: filterGroup === g ? "#6366f120" : "#141722",
+                    color: filterGroup === g ? "#818cf8" : "#64748b",
+                    border: filterGroup === g ? "1px solid #6366f140" : "1px solid transparent",
+                  }}>{g}</button>
+                ))}
+              </div>
+
+              {/* Agent list */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
             {filteredAgents.map(agent => {
               const isOpen = openPanes.includes(agent.id);
               const isAgentStreaming = streaming[agent.id];
+              const isDragging = draggedId === agent.id;
+              const isDragOver = dragOverId === agent.id;
               return (
-                <button key={agent.id} onClick={() => togglePane(agent.id)} style={{
-                  display: "flex", alignItems: "center", gap: 10, width: "100%",
-                  padding: "10px 10px", borderRadius: 8, border: "none",
-                  backgroundColor: isOpen ? `${agent.color}15` : "transparent",
-                  cursor: "pointer", marginBottom: 2, textAlign: "left",
-                  borderLeft: isOpen ? `2px solid ${agent.color}` : "2px solid transparent",
-                  transition: "all 0.15s",
-                }}>
-                  <span style={{ fontSize: 18, width: 28, textAlign: "center" }}>{agent.icon}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: isOpen ? "#f1f5f9" : "#94a3b8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{agent.name}</div>
+                <div
+                  key={agent.id}
+                  draggable
+                  onDragStart={(e) => {
+                    setDraggedId(agent.id);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragEnd={() => {
+                    setDraggedId(null);
+                    setDragOverId(null);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (draggedId && draggedId !== agent.id) {
+                      setDragOverId(agent.id);
+                    }
+                  }}
+                  onDragLeave={() => setDragOverId(null)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedId && draggedId !== agent.id && onReorderAgents) {
+                      onReorderAgents(draggedId, agent.id);
+                    }
+                    setDraggedId(null);
+                    setDragOverId(null);
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, width: "100%",
+                    padding: "10px 10px", borderRadius: 8, border: "none",
+                    backgroundColor: isDragOver ? "#1e3a5f" : (isOpen ? `${agent.color}15` : "transparent"),
+                    cursor: "grab", marginBottom: 2, textAlign: "left",
+                    borderLeft: isOpen ? `2px solid ${agent.color}` : "2px solid transparent",
+                    transition: "all 0.15s",
+                    opacity: isDragging ? 0.5 : 1,
+                    transform: isDragOver ? "scale(1.02)" : "none",
+                  }}
+                >
+                  <span 
+                    onClick={() => togglePane(agent.id)} 
+                    style={{ fontSize: 18, width: 28, textAlign: "center", cursor: "pointer" }}
+                  >
+                    {agent.icon}
+                  </span>
+                  <div onClick={() => togglePane(agent.id)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
+                    <div style={{ 
+                      fontSize: 12, fontWeight: 600, 
+                      color: isOpen ? "#f1f5f9" : "#94a3b8", 
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      display: "flex", alignItems: "center", gap: 4
+                    }}>
+                      {agent.name}
+                      {agent.isCustom && <span style={{ fontSize: 8, color: "#64748b" }}>★</span>}
+                    </div>
                     <StatusDot status={isAgentStreaming ? "computing" : agent.status} />
                   </div>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); onAgentSettings?.(agent); }}
+                    style={{ 
+                      background: "none", border: "none", color: "#475569", 
+                      cursor: "pointer", padding: 2, fontSize: 12, opacity: 0.6
+                    }}
+                    title="Settings"
+                  >⚙</button>
                   {isOpen && <span style={{ fontSize: 8, color: agent.color }}>●</span>}
-                </button>
+                </div>
               );
             })}
+            
+            {/* Create Agent button */}
+            <button 
+              onClick={onCreateAgent} 
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                width: "100%", padding: "10px", borderRadius: 8, marginTop: 8,
+                border: "1px dashed #2a2d3e", backgroundColor: "transparent",
+                color: "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 500,
+                transition: "all 0.15s",
+              }}
+              onMouseOver={e => e.currentTarget.style.borderColor = "#6366f1"}
+              onMouseOut={e => e.currentTarget.style.borderColor = "#2a2d3e"}
+            >
+              <span style={{ fontSize: 14 }}>+</span> Create Agent
+            </button>
           </div>
+            </>
+          )}
 
-          {/* Layout controls */}
+          {/* Tasks view info (shown when tasks view is active) */}
+          {activeView === 'tasks' && (
+            <div style={{ flex: 1, padding: "16px", color: "#64748b", fontSize: 12 }}>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", marginBottom: 4 }}>
+                  Task Views
+                </div>
+                <p style={{ margin: 0, lineHeight: 1.5 }}>
+                  Manage agent handoffs as tasks. Switch between Board (Kanban) and List views.
+                </p>
+              </div>
+              <div style={{ fontSize: 10, color: "#475569" }}>
+                <div style={{ marginBottom: 4 }}>• Drag tasks between columns</div>
+                <div style={{ marginBottom: 4 }}>• Click to edit details</div>
+                <div>• Create tasks for agent handoffs</div>
+              </div>
+            </div>
+          )}
+
+          {/* Layout controls (agents view only) */}
+          {activeView === 'agents' && (
           <div style={{ padding: "12px", borderTop: "1px solid #1e2130" }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: "#64748b", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.5px" }}>Layout</div>
             <div style={{ display: "flex", gap: 4 }}>
@@ -125,6 +259,18 @@ export default function Sidebar({
               color: "#ef4444", fontSize: 10, fontWeight: 600, cursor: "pointer",
             }}>Sign Out</button>
           </div>
+          )}
+          
+          {/* Sign out for tasks view */}
+          {activeView === 'tasks' && (
+            <div style={{ padding: "12px", borderTop: "1px solid #1e2130" }}>
+              <button onClick={onLogout} style={{
+                width: "100%", padding: "8px", borderRadius: 6,
+                border: "1px solid #2a2d3e", backgroundColor: "transparent",
+                color: "#ef4444", fontSize: 10, fontWeight: 600, cursor: "pointer",
+              }}>Sign Out</button>
+            </div>
+          )}
         </>
       )}
 

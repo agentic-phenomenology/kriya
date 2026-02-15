@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import LoginScreen from "./components/LoginScreen";
 import ChatPane from "./components/ChatPane";
 import Sidebar from "./components/Sidebar";
+import AgentSettings from "./components/AgentSettings";
+import TasksView from "./components/TasksView";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
@@ -24,6 +26,12 @@ export default function AgentWorkspace() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [layout, setLayout] = useState("grid");
   const [filterGroup, setFilterGroup] = useState("All");
+  const [activeView, setActiveView] = useState("agents"); // 'agents' or 'tasks'
+  
+  // Settings modal state
+  const [settingsModal, setSettingsModal] = useState(null); // { agent, isCreating }
+  const [models, setModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   // Ref to always have current messages (fixes stale closure in async sendMessage)
   const messagesRef = useRef(messages);
@@ -56,6 +64,125 @@ export default function AgentWorkspace() {
       console.error('Failed to load agents:', err);
     }
   };
+  
+  const loadModels = async () => {
+    if (models.length > 0) return; // Already loaded
+    setModelsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/models`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to load models');
+      const data = await res.json();
+      setModels(data);
+    } catch (err) {
+      console.error('Failed to load models:', err);
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+  
+  // Open settings modal for an agent
+  const openAgentSettings = useCallback((agent) => {
+    loadModels();
+    setSettingsModal({ agent, isCreating: false });
+  }, []);
+  
+  // Open create agent modal
+  const openCreateAgent = useCallback(() => {
+    loadModels();
+    setSettingsModal({ agent: null, isCreating: true });
+  }, []);
+  
+  // Save agent settings
+  const saveAgentSettings = useCallback(async (formData) => {
+    const { agent, isCreating } = settingsModal;
+    
+    if (isCreating) {
+      // Create new custom agent
+      const res = await fetch(`${API_BASE}/api/agents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(formData)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to create agent');
+      }
+      await loadAgents();
+    } else if (agent.isCustom) {
+      // Update custom agent directly
+      const res = await fetch(`${API_BASE}/api/agents/${agent.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(formData)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to update agent');
+      }
+      await loadAgents();
+    } else {
+      // Save user settings for default agent
+      const res = await fetch(`${API_BASE}/api/agents/${agent.id}/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(formData)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to save settings');
+      }
+      await loadAgents();
+    }
+  }, [settingsModal]);
+  
+  // Delete custom agent
+  const deleteAgent = useCallback(async (agentId) => {
+    const res = await fetch(`${API_BASE}/api/agents/${agentId}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Failed to delete agent');
+    }
+    setOpenPanes(prev => prev.filter(id => id !== agentId));
+    setMessages(prev => {
+      const updated = { ...prev };
+      delete updated[agentId];
+      return updated;
+    });
+    await loadAgents();
+  }, []);
+  
+  // Reorder agents via drag-and-drop
+  const handleReorderAgents = useCallback(async (draggedId, targetId) => {
+    // Find indices
+    const draggedIdx = agents.findIndex(a => a.id === draggedId);
+    const targetIdx = agents.findIndex(a => a.id === targetId);
+    if (draggedIdx === -1 || targetIdx === -1) return;
+    
+    // Reorder locally first for instant feedback
+    const reordered = [...agents];
+    const [dragged] = reordered.splice(draggedIdx, 1);
+    reordered.splice(targetIdx, 0, dragged);
+    setAgents(reordered);
+    
+    // Save order to server
+    const order = reordered.map((a, idx) => ({ agentId: a.id, order: idx }));
+    try {
+      await fetch(`${API_BASE}/api/agents/order`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ order })
+      });
+    } catch (err) {
+      console.error('Failed to save agent order:', err);
+    }
+  }, [agents]);
 
   const handleLogin = async (username, password) => {
     setAuthError("");
@@ -267,63 +394,92 @@ export default function AgentWorkspace() {
         onLogout={handleLogout}
         onShowAll={() => setOpenPanes(agents.map(a => a.id))}
         onCloseAll={() => { setOpenPanes([]); setMaximized(null); }}
+        onCreateAgent={openCreateAgent}
+        onReorderAgents={handleReorderAgents}
+        onAgentSettings={openAgentSettings}
+        activeView={activeView}
+        onViewChange={setActiveView}
       />
 
       {/* Main content area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        {/* Top bar */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "8px 16px", borderBottom: "1px solid #1e2130", backgroundColor: "#0a0c14",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "#94a3b8" }}>
-              {openPanes.length} pane{openPanes.length !== 1 ? "s" : ""} open
-            </span>
-            <span style={{ fontSize: 11, color: "#475569" }}>
-              {maximized ? "Focused view" : `${layout.charAt(0).toUpperCase() + layout.slice(1)} layout`}
-            </span>
-          </div>
-          <div style={{ fontSize: 11, color: "#475569" }}>
-            Powered by OpenRouter
-          </div>
-        </div>
-
-        {/* Chat grid */}
-        <div style={{
-          flex: 1, display: openPanes.length ? "grid" : "flex",
-          ...getGridStyle(),
-          gap: 8, padding: 8, overflow: "hidden",
-          alignItems: openPanes.length ? undefined : "center",
-          justifyContent: openPanes.length ? undefined : "center",
-        }}>
-          {openPanes.length === 0 ? (
-            <div style={{ textAlign: "center", color: "#475569" }}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>🤖</div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "#64748b" }}>No agents selected</div>
-              <div style={{ fontSize: 12, marginTop: 6 }}>Click an agent in the sidebar to open a chat pane</div>
+        {/* Agents view */}
+        {activeView === 'agents' && (
+          <>
+            {/* Top bar */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "8px 16px", borderBottom: "1px solid #1e2130", backgroundColor: "#0a0c14",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#94a3b8" }}>
+                  {openPanes.length} pane{openPanes.length !== 1 ? "s" : ""} open
+                </span>
+                <span style={{ fontSize: 11, color: "#475569" }}>
+                  {maximized ? "Focused view" : `${layout.charAt(0).toUpperCase() + layout.slice(1)} layout`}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#475569" }}>
+                Powered by OpenRouter
+              </div>
             </div>
-          ) : (
-            visiblePanes.map(id => {
-              const agent = agents.find(a => a.id === id);
-              if (!agent) return null;
-              return (
-                <ChatPane
-                  key={id}
-                  agent={agent}
-                  messages={messages[id] || []}
-                  isMaximized={maximized === id}
-                  onToggleMaximize={toggleMaximize}
-                  onClose={closePane}
-                  onSend={sendMessage}
-                  isStreaming={streaming[id]}
-                  error={errors[id]}
-                />
-              );
-            })
-          )}
-        </div>
+
+            {/* Chat grid */}
+            <div style={{
+              flex: 1, display: openPanes.length ? "grid" : "flex",
+              ...getGridStyle(),
+              gap: 8, padding: 8, overflow: "hidden",
+              alignItems: openPanes.length ? undefined : "center",
+              justifyContent: openPanes.length ? undefined : "center",
+            }}>
+              {openPanes.length === 0 ? (
+                <div style={{ textAlign: "center", color: "#475569" }}>
+                  <div style={{ fontSize: 48, marginBottom: 16 }}>🤖</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "#64748b" }}>No agents selected</div>
+                  <div style={{ fontSize: 12, marginTop: 6 }}>Click an agent in the sidebar to open a chat pane</div>
+                </div>
+              ) : (
+                visiblePanes.map(id => {
+                  const agent = agents.find(a => a.id === id);
+                  if (!agent) return null;
+                  return (
+                    <ChatPane
+                      key={id}
+                      agent={agent}
+                      messages={messages[id] || []}
+                      isMaximized={maximized === id}
+                      onToggleMaximize={toggleMaximize}
+                      onClose={closePane}
+                      onSend={sendMessage}
+                      onSettings={openAgentSettings}
+                      isStreaming={streaming[id]}
+                      error={errors[id]}
+                    />
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Tasks view */}
+        {activeView === 'tasks' && (
+          <TasksView agents={agents} />
+        )}
       </div>
+      
+      {/* Settings Modal */}
+      {settingsModal && (
+        <AgentSettings
+          agent={settingsModal.agent}
+          models={models}
+          modelsLoading={modelsLoading}
+          onSave={saveAgentSettings}
+          onDelete={deleteAgent}
+          onClose={() => setSettingsModal(null)}
+          isCreating={settingsModal.isCreating}
+        />
+      )}
     </div>
   );
 }
